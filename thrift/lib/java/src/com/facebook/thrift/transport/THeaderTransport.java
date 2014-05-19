@@ -18,13 +18,11 @@
  */
 package com.facebook.thrift.transport;
 
-import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.*;
@@ -41,9 +39,9 @@ public class THeaderTransport extends TFramedTransport {
   public static final int HEADER_MAGIC = 0x0FFF0000;
 
   // HTTP has different magic
-  public static final int HTTP_MAGIC = 0x504F5354; // 'POST'
+  public static final int HTTP_SERVER_MAGIC = 0x504F5354; // 'POST'
 
-  // Note max frame size is slightly less than HTTP_MAGIC
+  // Note max frame size is slightly less than HTTP_SERVER_MAGIC
   public static final int MAX_FRAME_SIZE = 0x3FFFFFFF;
 
   private int zlibBufferSize = 512;
@@ -285,7 +283,7 @@ public class THeaderTransport extends TFramedTransport {
         transport_.readAll(buff, 4, reqLen - 4);
         readBuffer_.reset(buff);
       }
-    } else if (word1 == HTTP_MAGIC) {
+    } else if (word1 == HTTP_SERVER_MAGIC) {
       throw new THeaderException("This transport does not support HTTP");
     } else {
       if (word1 - 4 > MAX_FRAME_SIZE) {
@@ -351,7 +349,6 @@ public class THeaderTransport extends TFramedTransport {
   }
 
   private void writeVarint(ByteBuffer out, int n) {
-    int idx = 0;
     while (true) {
       if ((n & ~0x7F) == 0) {
         out.put((byte)n);
@@ -481,9 +478,7 @@ public class THeaderTransport extends TFramedTransport {
           data = ByteBuffer.wrap(outBytes.get(0));
         } else {
           ByteBuffer output = ByteBuffer.allocate(length);
-          Iterator iter = outBytes.iterator();
-          while (iter.hasNext()) {
-            byte[] outBlock = (byte[])iter.next();
+          for (byte[] outBlock : outBytes) {
             output.put(outBlock, 0, Math.min(zlibBufferSize, length));
             length -= outBlock.length;
           }
@@ -557,13 +552,11 @@ public class THeaderTransport extends TFramedTransport {
 
     int len = 10; // 5 bytes varint for info header type
                   // 5 bytes varint for info headers count
-    Iterator it = writeHeaders.entrySet().iterator();
-    while (it.hasNext()) {
+    for (Map.Entry<String, String> header : writeHeaders.entrySet()) {
       len += 10; // 5 bytes varint for key size and
                  // 5 bytes varint for value size
-      Map.Entry pairs = (Map.Entry)it.next();
-      len += ((String)pairs.getKey()).length();
-      len += ((String)pairs.getValue()).length();
+      len += header.getKey().length();
+      len += header.getValue().length();
     }
     return len;
   }
@@ -622,11 +615,9 @@ public class THeaderTransport extends TFramedTransport {
       if (writeHeaders.size() > 0) {
         writeVarint(infoData, Infos.INFO_KEYVALUE.getValue());
         writeVarint(infoData, writeHeaders.size());
-        Iterator it = writeHeaders.entrySet().iterator();
-        while (it.hasNext()) {
-          Map.Entry pairs = (Map.Entry)it.next();
-          writeString(infoData, (String)pairs.getKey());
-          writeString(infoData, (String)pairs.getValue());
+        for (Map.Entry<String, String> pairs : writeHeaders.entrySet()) {
+          writeString(infoData, pairs.getKey());
+          writeString(infoData, pairs.getValue());
         }
       }
       infoData.limit(infoData.position());

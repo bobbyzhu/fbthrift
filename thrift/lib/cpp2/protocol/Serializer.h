@@ -26,8 +26,6 @@
 #include "thrift/lib/cpp/TApplicationException.h"
 #include "folly/io/IOBuf.h"
 
-using apache::thrift::TApplicationException;
-
 namespace apache { namespace thrift {
 
 template <typename Reader, typename Writer>
@@ -81,28 +79,7 @@ std::unique_ptr<folly::IOBuf> serializeErrorProtocol(
 }
 
 std::unique_ptr<folly::IOBuf> serializeError(
-  int protId, TApplicationException obj, folly::IOBuf* buf) {
-  switch(protId) {
-    case apache::thrift::protocol::T_BINARY_PROTOCOL:
-    {
-      return serializeErrorProtocol<BinaryProtocolReader,
-        BinaryProtocolWriter>(obj, std::move(buf));
-      break;
-    }
-    case apache::thrift::protocol::T_COMPACT_PROTOCOL:
-    {
-      return serializeErrorProtocol<CompactProtocolReader,
-        CompactProtocolWriter>(obj, std::move(buf));
-      break;
-    }
-    default:
-    {
-      LOG(ERROR) << "Invalid protocol from client";
-    }
-  }
-
-  return nullptr;
-}
+  int protId, TApplicationException obj, folly::IOBuf* buf);
 
 }} // namespace apache::thrift
 #endif

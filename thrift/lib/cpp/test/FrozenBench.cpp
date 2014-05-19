@@ -1,24 +1,23 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
+
 #define BOOST_TEST_MODULE FrozenTest
 
 #include "folly/Conv.h"
+#include "folly/Hash.h"
 #include "folly/Benchmark.h"
 #include "thrift/lib/cpp/util/ThriftSerializer.h"
 #include "thrift/lib/cpp/test/gen-cpp/FrozenTypes_types.h"
@@ -123,6 +122,151 @@ BENCHMARK_RELATIVE(DeserializerBinary, iters) {
   benchmarkDeserializer<apache::thrift::util::ThriftSerializerBinary>(iters);
 }
 
+BENCHMARK_DRAW_LINE()
+
+const int nEntries = 10000000;
+auto entries = []{
+  std::vector<std::pair<int, int>> entries(nEntries);
+  for (size_t i = 0; i < nEntries; ++i) {
+    entries[i].first = i;
+  }
+  std::random_shuffle(entries.begin(), entries.end());
+  for (int i = 0; i < nEntries; ++i) {
+
+    entries[i].second = i;
+  }
+  return entries;
+}();
+auto shuffled = []{
+  auto shuffled = entries;
+  std::random_shuffle(shuffled.begin(), shuffled.end());
+  return shuffled;
+}();
+auto hmap = [] {
+  std::unordered_map<int, int> ret;
+  for (auto& e : entries) {
+    if (e.second % 2 == 0) {
+      CHECK(ret.insert(e).second) << e.second;
+    }
+  }
+  return ret;
+}();
+std::map<int, int> map(hmap.begin(), hmap.end());
+auto fmap = freeze(map);
+auto fhmap = freeze(hmap);
+
+BENCHMARK(thawedMap, iters) {
+  while (iters--) {
+    for (auto& e : shuffled) {
+      auto found = map.find(e.first);
+      if (found != map.end()) {
+        CHECK_EQ(found->second, e.second);
+      } else {
+        CHECK(e.second % 2) << e.second;
+      }
+    }
+  }
+}
+
+
+BENCHMARK_RELATIVE(frozenMap, iters) {
+  while (iters--) {
+    for (auto& e : shuffled) {
+      auto found = fmap->find(e.first);
+      if (found != fmap->end()) {
+        CHECK_EQ(found->second, e.second) << e.first;
+      } else {
+        CHECK(e.second % 2) << e.second;
+      }
+    }
+  }
+}
+
+BENCHMARK_DRAW_LINE()
+
+BENCHMARK(thawedHashMap, iters) {
+  while (iters--) {
+    for (auto& e : shuffled) {
+      auto found = hmap.find(e.first);
+      if (found != hmap.end()) {
+        CHECK_EQ(found->second, e.second);
+      } else {
+        CHECK(e.second % 2) << e.second;
+      }
+    }
+  }
+}
+
+BENCHMARK_RELATIVE(frozenHashMap, iters) {
+  while (iters--) {
+    for (auto& e : shuffled) {
+      auto found = fhmap->find(e.first);
+      if (found != fhmap->end()) {
+        CHECK_EQ(found->second, e.second) << e.first;
+      } else {
+        CHECK(e.second % 2) << e.second;
+      }
+    }
+  }
+}
+
+BENCHMARK_DRAW_LINE()
+
+auto bigMap = [] {
+  std::map<std::string, std::pair<std::string, std::string>> bigMap;
+  const int kSalt = 0x619abc7e;
+  const int nKeys = 500000;
+  for (int i = 0; i < nKeys; ++i) {
+    auto h = folly::hash::jenkins_rev_mix32(i ^ kSalt);
+    auto key = folly::to<std::string>(h);
+    bigMap[key] = std::make_pair(h * h, h * h * h);
+  }
+  return bigMap;
+}();
+std::map<std::string, std::pair<std::string, std::string>> bigHashMap(
+  bigMap.begin(), bigMap.end());
+
+BENCHMARK(FreezeBigMap, iters) {
+  int k = 0;
+  while (iters--) {
+    auto f = freeze(bigMap);
+    k ^= f->size();
+  }
+  folly::doNotOptimizeAway(k);
+}
+
+BENCHMARK_RELATIVE(FreezeBigHashMap, iters) {
+  int k = 0;
+  while (iters--) {
+    auto f = freeze(bigHashMap);
+    k ^= f->size();
+  }
+  folly::doNotOptimizeAway(k);
+}
+
+/*
+============================================================================
+thrift/lib/cpp/test/FrozenBench.cpp             relative  time/iter  iters/s
+============================================================================
+Freeze                                                     357.35us    2.80K
+FreezePreallocated                               174.97%   204.23us    4.90K
+SerializerCompact                                228.34%   156.50us    6.39K
+SerializerBinary                                 365.94%    97.65us   10.24K
+----------------------------------------------------------------------------
+Thaw                                                       620.40us    1.61K
+DeserializerCompact                               62.20%   997.36us    1.00K
+DeserializerBinary                                73.01%   849.74us    1.18K
+----------------------------------------------------------------------------
+thawedMap                                                    11.50s   86.98m
+frozenMap                                        257.34%      4.47s  223.83m
+----------------------------------------------------------------------------
+thawedHashMap                                                 1.00s  998.40m
+frozenHashMap                                    141.39%   708.39ms     1.41
+----------------------------------------------------------------------------
+FreezeBigMap                                               224.39ms     4.46
+FreezeBigHashMap                                 227.49%    98.63ms    10.14
+============================================================================
+ */
 int main(int argc, char** argv) {
   google::ParseCommandLineFlags(&argc, &argv, true);
   folly::runBenchmarks();

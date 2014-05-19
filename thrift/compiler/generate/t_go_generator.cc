@@ -1,20 +1,17 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 /*
@@ -39,17 +36,6 @@
 #include "thrift/compiler/platform.h"
 
 using namespace std;
-
-/**
- * A helper for automatically formatting the emitted Go code from the Thrift
- * IDL per the Go style guide.
- *
- * Returns:
- *  - true, if the formatting process succeeded.
- *  - false, if the formatting process failed, which means the basic output was
- *           still generated.
- */
-bool format_go_output(const string &file_path);
 
 const string default_thrift_import = "git.apache.org/thrift.git/lib/go/thrift";
 
@@ -617,8 +603,6 @@ void t_go_generator::close_generator()
     // Close types and constants files
     f_consts_.close();
     f_types_.close();
-    format_go_output(f_types_name_);
-    format_go_output(f_consts_name_);
 }
 
 /**
@@ -791,7 +775,7 @@ string t_go_generator::render_const_value(t_type* type, t_const_value* value, co
         map<t_const_value*, t_const_value*>::const_iterator v_iter;
 
         for (v_iter = val.begin(); v_iter != val.end(); ++v_iter) {
-            t_type* field_type = NULL;
+            t_type* field_type = nullptr;
 
             for (f_iter = fields.begin(); f_iter != fields.end(); ++f_iter) {
                 if ((*f_iter)->get_name() == v_iter->first->get_string()) {
@@ -799,7 +783,7 @@ string t_go_generator::render_const_value(t_type* type, t_const_value* value, co
                 }
             }
 
-            if (field_type == NULL) {
+            if (field_type == nullptr) {
                 throw "type error: " + type->get_name() + " has no field " + v_iter->first->get_string();
             }
 
@@ -993,7 +977,7 @@ void t_go_generator::generate_go_struct_definition(ofstream& out,
         const string go_safe_name = variable_name_to_go_name(escaped_field_name);
         const string publicized_name = publicize(go_safe_name);
         const t_type* type = get_true_type((*m_iter)->get_type());
-        const bool has_default_value = (*m_iter)->get_value() != NULL;
+        const bool has_default_value = (*m_iter)->get_value() != nullptr;
         const bool type_is_enum = type->is_enum();
 
         if (has_default_value) {
@@ -1054,7 +1038,7 @@ void t_go_generator::generate_isset_helpers(ofstream& out,
                         out <<
                             indent() << "return p." << field_name << " != nil" << endl;
                     } else {
-                        s_check_value = (field_default_value == NULL) ? "\"\"" : render_const_value(type, field_default_value, tstruct_name);
+                        s_check_value = (field_default_value == nullptr) ? "\"\"" : render_const_value(type, field_default_value, tstruct_name);
                         out <<
                             indent() << "return p." << field_name << " != " << s_check_value << endl;
                     }
@@ -1062,7 +1046,7 @@ void t_go_generator::generate_isset_helpers(ofstream& out,
                     break;
 
                 case t_base_type::TYPE_BOOL:
-                    s_check_value = (field_default_value != NULL && field_default_value->get_integer() > 0) ? "true" : "false";
+                    s_check_value = (field_default_value != nullptr && field_default_value->get_integer() > 0) ? "true" : "false";
                     out <<
                         indent() << "return p." << field_name << " != " << s_check_value << endl;
                     break;
@@ -1071,13 +1055,13 @@ void t_go_generator::generate_isset_helpers(ofstream& out,
                 case t_base_type::TYPE_I16:
                 case t_base_type::TYPE_I32:
                 case t_base_type::TYPE_I64:
-                    i_check_value = (field_default_value == NULL) ? 0 : field_default_value->get_integer();
+                    i_check_value = (field_default_value == nullptr) ? 0 : field_default_value->get_integer();
                     out <<
                         indent() << "return p." << field_name << " != " << i_check_value << endl;
                     break;
 
                 case t_base_type::TYPE_DOUBLE:
-                    d_check_value = (field_default_value == NULL) ? 0.0 : field_default_value->get_double();
+                    d_check_value = (field_default_value == nullptr) ? 0.0 : field_default_value->get_double();
                     out <<
                         indent() << "return p." << field_name << " != " << d_check_value << endl;
                     break;
@@ -1092,7 +1076,7 @@ void t_go_generator::generate_isset_helpers(ofstream& out,
                 out <<
                     indent() << "return p." << field_name << " != nil" << endl;
             } else if (type->is_list() || type->is_set()) {
-                if (field_default_value != NULL && field_default_value->get_list().size() > 0) {
+                if (field_default_value != nullptr && field_default_value->get_list().size() > 0) {
                     out <<
                         indent() << "return p." << field_name << " != nil" << endl;
                 } else {
@@ -1100,7 +1084,7 @@ void t_go_generator::generate_isset_helpers(ofstream& out,
                         indent() << "return p." << field_name << " != nil && len(p." << field_name << ") > 0" << endl;
                 }
             } else if (type->is_map()) {
-                if (field_default_value != NULL && field_default_value->get_map().size() > 0) {
+                if (field_default_value != nullptr && field_default_value->get_map().size() > 0) {
                     out <<
                         indent() << "return p." << field_name << " != nil" << endl;
                 } else {
@@ -1406,7 +1390,6 @@ void t_go_generator::generate_service(t_service* tservice)
     // Close service file
     f_service_ << endl;
     f_service_.close();
-    format_go_output(f_service_name);
 }
 
 /**
@@ -1467,7 +1450,7 @@ void t_go_generator::generate_service_interface(t_service* tservice)
     string serviceName(publicize(tservice->get_name()));
     string interfaceName = serviceName;
 
-    if (tservice->get_extends() != NULL) {
+    if (tservice->get_extends() != nullptr) {
         extends = type_name(tservice->get_extends());
         size_t index = extends.rfind(".");
 
@@ -1513,7 +1496,7 @@ void t_go_generator::generate_service_client(t_service* tservice)
     string extends_client_new = "";
     string serviceName(publicize(tservice->get_name()));
 
-    if (tservice->get_extends() != NULL) {
+    if (tservice->get_extends() != nullptr) {
         extends = type_name(tservice->get_extends());
         size_t index = extends.rfind(".");
 
@@ -1780,7 +1763,7 @@ void t_go_generator::generate_service_remote(t_service* tservice)
     t_service* parent = tservice->get_extends();
 
     // collect inherited functions
-    while (parent != NULL) {
+    while (parent != nullptr) {
         vector<t_function*> p_functions = parent->get_functions();
         functions.insert(functions.end(), p_functions.begin(), p_functions.end());
         parent = parent->get_extends();
@@ -2169,7 +2152,6 @@ void t_go_generator::generate_service_remote(t_service* tservice)
              indent() << "}" << endl;
     // Close service file
     f_remote.close();
-    format_go_output(f_remote_name);
 #ifndef _MSC_VER
     // Make file executable, love that bitwise OR action
     chmod(f_remote_name.c_str(),
@@ -2201,7 +2183,7 @@ void t_go_generator::generate_service_server(t_service* tservice)
     string extends_processor_new = "";
     string serviceName(publicize(tservice->get_name()));
 
-    if (tservice->get_extends() != NULL) {
+    if (tservice->get_extends() != nullptr) {
         extends = type_name(tservice->get_extends());
         size_t index = extends.rfind(".");
 
@@ -3002,7 +2984,7 @@ string t_go_generator::declare_argument(t_field* tfield)
     std::ostringstream result;
     result << publicize(tfield->get_name()) << "=";
 
-    if (tfield->get_value() != NULL) {
+    if (tfield->get_value() != nullptr) {
         result << "thrift_spec[" <<
                tfield->get_key() << "][4]";
     } else {
@@ -3021,7 +3003,7 @@ string t_go_generator::render_field_default_value(t_field* tfield, const string&
 {
     t_type* type = get_true_type(tfield->get_type());
 
-    if (tfield->get_value() != NULL) {
+    if (tfield->get_value() != nullptr) {
         return render_const_value(type, tfield->get_value(), name);
     } else {
         return "nil";
@@ -3112,7 +3094,7 @@ string t_go_generator::type_name(t_type* ttype)
 {
     t_program* program = ttype->get_program();
 
-    if (program != NULL && program != program_) {
+    if (program != nullptr && program != program_) {
         string module(get_real_go_module(program));
         // for namespaced includes, only keep part after dot.
         size_t dot = module.rfind('.');
@@ -3344,18 +3326,6 @@ string t_go_generator::type_to_spec_args(t_type* ttype)
     }
 
     throw "INVALID TYPE IN type_to_spec_args: " + ttype->get_name();
-}
-
-bool format_go_output(const string &file_path)
-{
-    const string command = "gofmt -w " + file_path;
-
-    if (system(command.c_str()) == 0) {
-        return true;
-    }
-
-    fprintf(stderr, "WARNING - Running '%s' failed.\n", command.c_str());
-    return false;
 }
 
 

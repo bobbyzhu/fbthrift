@@ -1,21 +1,19 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
+
 #ifndef THRIFT_SERVER_H_
 #define THRIFT_SERVER_H_ 1
 
@@ -107,6 +105,12 @@ class ThriftServer : public apache::thrift::server::TServer {
     std::shared_ptr<apache::thrift::concurrency::Thread> thread;
   };
 
+  //! Prefix for worker thread names
+  std::string cpp2WorkerThreadName_;
+
+  //! Prefix for pool thread names
+  std::string poolThreadName_;
+
   //! SSL context
   std::shared_ptr<apache::thrift::transport::SSLContext> sslContext_;
 
@@ -122,9 +126,10 @@ class ThriftServer : public apache::thrift::server::TServer {
   // Security negotiation settings
   bool saslEnabled_;
   bool nonSaslEnabled_;
-  std::string servicePrincipal_;
   std::function<std::unique_ptr<SaslServer> (
     apache::thrift::async::TEventBase*)> saslServerFactory_;
+  std::shared_ptr<apache::thrift::concurrency::ThreadManager>
+    saslThreadManager_;
 
   std::unique_ptr<apache::thrift::ShutdownSocketSet> shutdownSocketSet_;
 
@@ -230,6 +235,8 @@ class ThriftServer : public apache::thrift::server::TServer {
 
   bool queueSends_;
 
+  bool enableCodel_;
+
   bool stopWorkersOnStopListening_;
 
   enum class InjectedFailure {
@@ -274,6 +281,37 @@ class ThriftServer : public apache::thrift::server::TServer {
   ThriftServer();
 
   virtual ~ThriftServer();
+
+  /**
+   * Set the prefix for naming the worker threads. "Cpp2Worker" by default.
+   * must be called before serve() for it to take effect
+   *
+   * @param cpp2WorkerThreadName net thread name prefix
+   */
+  void setCpp2WorkerThreadName(const std::string& cpp2WorkerThreadName) {
+    assert(workers_.size() == 0);
+    cpp2WorkerThreadName_ = cpp2WorkerThreadName;
+  }
+
+  /**
+   * Get the prefix for naming the pool threads.
+   *
+   * @return current setting.
+   */
+  const std::string& getPoolThreadName() const {
+    return poolThreadName_;
+  }
+
+  /**
+   * Set the prefix for naming the pool threads. Not set by default.
+   * must be called before serve() for it to take effect
+   * ignored if setThreadManager() is called.
+   *
+   * @param poolThreadName thread name prefix
+   */
+  void setPoolThreadName(const std::string& poolThreadName) {
+    poolThreadName_ = poolThreadName;
+  }
 
   /**
    * Get the maximum # of connections allowed before overload.
@@ -349,9 +387,17 @@ class ThriftServer : public apache::thrift::server::TServer {
     }
   }
 
-  int32_t getGlobalActiveRequests() {
+  int32_t getGlobalActiveRequests() const {
     return globalActiveRequests_;
   }
+
+  /**
+   * Number of connections that epoll says need attention but ThriftServer
+   * didn't have a chance to "ack" yet. A rough proxy for a number of pending
+   * requests that are waiting to be processed (though it's an imperfect proxy
+   * as there may be more than one request sent through a single connection).
+   */
+  int32_t getPendingCount() const;
 
   bool isOverloaded(uint32_t workerActiveRequests = 0);
 
@@ -486,17 +532,6 @@ class ThriftServer : public apache::thrift::server::TServer {
   }
   bool getSaslEnabled() {
     return saslEnabled_;
-  }
-
-  /**
-   * Set / get service principals for the SASL negotiations.
-   */
-  void setServicePrincipal(const std::string& service_principal) {
-    servicePrincipal_ = service_principal;
-  }
-
-  const std::string& getServicePrincipal() {
-    return servicePrincipal_;
   }
 
   // The default SASL implementation can be overridden for testing or
@@ -827,6 +862,18 @@ class ThriftServer : public apache::thrift::server::TServer {
 
   bool getQueueSends() {
     return queueSends_;
+  }
+
+  /**
+   * Codel queuing timeout - limit queueing time before overload
+   * http://en.wikipedia.org/wiki/CoDel
+   */
+  void setEnableCodel(bool enableCodel) {
+    enableCodel_ = enableCodel;
+  }
+
+  bool getEnableCodel() {
+    return enableCodel_;
   }
 
   /**

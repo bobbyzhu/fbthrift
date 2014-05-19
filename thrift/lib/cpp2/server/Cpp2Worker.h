@@ -1,20 +1,17 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #ifndef CPP2_WORKER_H_
@@ -70,8 +67,14 @@ class Cpp2Worker :
     eventBase_(),
     workerID_(workerID),
     activeRequests_(0),
-    pendingCount_(0) {
-    eventBase_.setObserver(server_->getObserver());
+    pendingCount_(0),
+    pendingTime_(std::chrono::steady_clock::now()) {
+    auto observer =
+      std::dynamic_pointer_cast<apache::thrift::async::EventBaseObserver>(
+      server_->getObserver());
+    if (observer) {
+      eventBase_.setObserver(observer);
+    }
   }
 
   /**
@@ -141,15 +144,15 @@ class Cpp2Worker :
   void serve();
 
   /**
-   * Count the number of pending fds.  Used for overload detection
-   * Not thread-safe
+   * Count the number of pending fds. Used for overload detection.
+   * Not thread-safe.
    */
-  void pendingCount();
+  int pendingCount();
 
   /**
-   * Cached pending count.  Thread-safe.
+   * Cached pending count. Thread-safe.
    */
-  int getPendingCount();
+  int getPendingCount() const;
 
  protected:
     apache::thrift::async::HHWheelTimer::UniquePtr timer_;
@@ -193,6 +196,7 @@ class Cpp2Worker :
   uint32_t activeRequests_;
 
   int pendingCount_;
+  std::chrono::steady_clock::time_point pendingTime_;
 
   friend class Cpp2Connection;
 };

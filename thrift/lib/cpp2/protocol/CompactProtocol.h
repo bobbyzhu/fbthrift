@@ -27,8 +27,6 @@
 
 #include <stack>
 
-using apache::thrift::protocol::TType;
-
 namespace apache { namespace thrift {
 
 using folly::IOBuf;
@@ -55,7 +53,7 @@ class CompactProtocolWriter {
  public:
 
   CompactProtocolWriter()
-      : out_(NULL, 0)
+      : out_(nullptr, 0)
       , booleanField_({nullptr, TType::T_BOOL, 0}) {}
 
   static inline ProtocolType protocolType() {
@@ -113,6 +111,12 @@ class CompactProtocolWriter {
   template <typename StrType>
   inline uint32_t writeBinary(const StrType& str);
   inline uint32_t writeBinary(const std::unique_ptr<IOBuf>& str);
+  inline uint32_t writeBinary(const IOBuf& str);
+  inline uint32_t writeSerializedData(
+    const std::unique_ptr<folly::IOBuf>& data) {
+    // TODO
+    return 0;
+  }
 
   /**
    * Functions that return the serialized size
@@ -148,6 +152,7 @@ class CompactProtocolWriter {
     return serializedSizeString(v);
   }
   inline uint32_t serializedSizeBinary(const std::unique_ptr<IOBuf>& v);
+  inline uint32_t serializedSizeBinary(const IOBuf& v);
   template <typename StrType>
   uint32_t serializedSizeZCBinary(const StrType& v) {
     return serializedSizeBinary(v);
@@ -155,6 +160,15 @@ class CompactProtocolWriter {
   uint32_t serializedSizeZCBinary(const std::unique_ptr<IOBuf>& v) {
     // size only
     return serializedSizeI32();
+  }
+  uint32_t serializedSizeZCBinary(const IOBuf& v) {
+    // size only
+    return serializedSizeI32();
+  }
+  inline uint32_t serializedSizeSerializedData(
+    const std::unique_ptr<folly::IOBuf>& data) {
+    // TODO
+    return 0;
   }
 
  protected:
@@ -182,14 +196,14 @@ class CompactProtocolReader {
   CompactProtocolReader()
     : string_limit_(0)
     , container_limit_(0)
-    , in_(NULL)
+    , in_(nullptr)
     , boolValue_({false, false}) {}
 
   CompactProtocolReader(int32_t string_limit,
                   int32_t container_limit)
     : string_limit_(string_limit)
     , container_limit_(container_limit)
-    , in_(NULL)
+    , in_(nullptr)
     , boolValue_({false, false}) {}
 
   static inline ProtocolType protocolType() {
@@ -248,8 +262,19 @@ class CompactProtocolReader {
   template <typename StrType>
   inline uint32_t readBinary(StrType& str);
   inline uint32_t readBinary(std::unique_ptr<IOBuf>& str);
+  inline uint32_t readBinary(IOBuf& str);
   uint32_t skip(TType type) {
     return apache::thrift::skip(*this, type);
+  }
+
+  Cursor getCurrentPosition() const {
+    return in_;
+  }
+  inline uint32_t readFromPositionAndAppend(
+    Cursor& cursor,
+    std::unique_ptr<folly::IOBuf>& ser) {
+    // TODO
+    return 0;
   }
 
   // Returns the last read sequence ID.  Used in servers

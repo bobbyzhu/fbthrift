@@ -19,7 +19,8 @@
 
 module thrift.internal.codegen;
 
-import std.traits : InterfacesTuple, isSomeFunction, isSomeString;
+import std.traits : InterfacesTuple, isAssociativeArray, isDynamicArray,
+       isSomeFunction, isSomeString;
 import std.typetuple : staticIndexOf, staticMap, NoDuplicates, TypeTuple;
 import thrift.codegen.base;
 
@@ -50,7 +51,13 @@ template FullyUnqual(T) {
  * true if null can be assigned to the passed type, false if not.
  */
 template isNullable(T) {
-  enum isNullable = __traits(compiles, { T t = null; });
+  static if (isDynamicArray!T || isAssociativeArray!T) {
+    // We can't distinguish empty arrays from null, so we must treat them as
+    // non-nullable.
+    enum isNullable = false;
+  } else {
+    enum isNullable = __traits(compiles, { T t = null; });
+  }
 }
 
 template isStruct(T) {
@@ -157,7 +164,15 @@ template getMethodMeta(T) if (isService!T) {
  * members, artifacts like package aliases, …
  */
 template isValueMember(T, string name) {
-  static if (!is(MemberType!(T, name))) {
+  // TODO: This is a horrible hack.  thriftOpEqualsImpl() and opEquals()
+  // are member functions that internally use isValueMember().  We can't
+  // try to use MemberType() to examine them, otherwise this will cause
+  // recursive template errors.  Even trying to use is(MemberType!()) generates
+  // errors.
+  static if (name == "thriftOpEqualsImpl" ||
+             name == "opEquals") {
+    enum isValueMember = false;
+  } else static if (!is(MemberType!(T, name))) {
     enum isValueMember = false;
   } else static if (
     is(MemberType!(T, name) == void) ||

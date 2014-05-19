@@ -1,21 +1,19 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
+
 #include "thrift/perf/cpp/LoadHandler.h"
 
 #include "thrift/lib/cpp/concurrency/ThreadManager.h"
@@ -52,9 +50,11 @@ DEFINE_int32(accept_timeout, 0, "accept timeout");
 DEFINE_int32(send_buffer, 0, "TCP send buffer");
 DEFINE_int32(recv_buffer, 0, "TCP receive buffer");
 
-FBCODE_DISABLE_DEPRECATED_WARNING("Testing TThreadPoolServer")
+// "Testing TThreadPoolServer"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 void setTunables(TServerSocket* socket, TThreadPoolServer* server) {
-FBCODE_RESTORE_DEPRECATED_WARNING()
+#pragma GCC diagnostic pop
   if (FLAGS_task_timeout > 0) {
     server->setTimeout(FLAGS_task_timeout);
   }
@@ -105,7 +105,7 @@ int main(int argc, char* argv[]) {
     std::bitset<CLIENT_TYPES_LEN> clientTypes;
     clientTypes[THRIFT_UNFRAMED_DEPRECATED] = 1;
     clientTypes[THRIFT_FRAMED_DEPRECATED] = 1;
-    clientTypes[THRIFT_HTTP_CLIENT_TYPE] = 1;
+    clientTypes[THRIFT_HTTP_SERVER_TYPE] = 1;
     clientTypes[THRIFT_HEADER_CLIENT_TYPE] = 1;
     THeaderProtocolFactory *factory = new THeaderProtocolFactory();
     factory->setClientTypes(clientTypes);
@@ -136,7 +136,9 @@ int main(int argc, char* argv[]) {
   typedef LoadTestProcessorT<ProtocolType> LoadProcessor;
   std::shared_ptr<LoadProcessor> processor(new LoadProcessor(handler));
 
-  FBCODE_DISABLE_DEPRECATED_WARNING("Testing TThreadPoolServer")
+  // "Testing TThreadPoolServer"
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   // the server itself
   scoped_ptr<TThreadPoolServer> server;
   if (FLAGS_header) {
@@ -149,7 +151,7 @@ int main(int argc, char* argv[]) {
                                        transportFactory, protocolFactory,
                                        threadManager));
   }
-  FBCODE_RESTORE_DEPRECATED_WARNING()
+  #pragma GCC diagnostic pop
 
   // set tunable parameters
   setTunables(serverSocket.get(), server.get());

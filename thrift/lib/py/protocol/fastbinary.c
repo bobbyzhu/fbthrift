@@ -1,24 +1,29 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <python/Python.h>
-#include <python/cStringIO.h>
+
+#if PY_MAJOR_VERSION >= 3
+ #define PyInt_FromLong PyLong_FromLong
+ #define PyInt_AsLong PyLong_AsLong
+ #define PyString_FromStringAndSize PyBytes_FromStringAndSize
+#else
+ #include <python/cStringIO.h>
+#endif
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <netinet/in.h>
@@ -122,6 +127,132 @@ typedef enum TType {
 typedef int Py_ssize_t;
 #endif
 
+// Mostly copied from cStringIO.c
+#if PY_MAJOR_VERSION >= 3
+
+/** io module in python3. */
+static PyObject* Python3IO;
+static PyTypeObject* BytesIOType;
+
+typedef struct {
+  PyObject_HEAD
+  char *buf;
+  Py_ssize_t pos, string_size;
+} IOobject;
+
+#define IOOOBJECT(O) ((IOobject*)(O))
+
+typedef struct { /* Subtype of IOobject */
+  PyObject_HEAD
+  char *buf;
+  Py_ssize_t pos, string_size;
+  Py_ssize_t buf_size;
+} Oobject;
+
+static int
+IO__opencheck(IOobject *self) {
+    if (!self->buf) {
+        PyErr_SetString(PyExc_ValueError,
+                        "I/O operation on closed file");
+        return 0;
+    }
+    return 1;
+}
+
+static int
+IO_cread(PyObject *self, char **output, Py_ssize_t  n) {
+    Py_ssize_t l;
+
+    if (!IO__opencheck(IOOOBJECT(self))) return -1;
+    assert(IOOOBJECT(self)->pos >= 0);
+    assert(IOOOBJECT(self)->string_size >= 0);
+    l = ((IOobject*)self)->string_size - ((IOobject*)self)->pos;
+    if (n < 0 || n > l) {
+        n = l;
+        if (n < 0) n=0;
+    }
+    if (n > INT_MAX) {
+        PyErr_SetString(PyExc_OverflowError,
+                        "length too large");
+        return -1;
+    }
+
+    *output=((IOobject*)self)->buf + ((IOobject*)self)->pos;
+    ((IOobject*)self)->pos += n;
+    return (int)n;
+}
+
+static int
+O_cwrite(PyObject *self, const char *c, Py_ssize_t  len) {
+    Py_ssize_t newpos;
+    Oobject *oself;
+    char *newbuf;
+
+    if (!IO__opencheck(IOOOBJECT(self))) return -1;
+    oself = (Oobject *)self;
+
+    if (len > INT_MAX) {
+        PyErr_SetString(PyExc_OverflowError,
+                        "length too large");
+        return -1;
+    }
+    assert(len >= 0);
+    if (oself->pos >= PY_SSIZE_T_MAX - len) {
+        PyErr_SetString(PyExc_OverflowError,
+                        "new position too large");
+        return -1;
+    }
+    newpos = oself->pos + len;
+    if (newpos >= oself->buf_size) {
+        size_t newsize = oself->buf_size;
+        newsize *= 2;
+        if (newsize <= (size_t)newpos || newsize > PY_SSIZE_T_MAX) {
+            assert(newpos < PY_SSIZE_T_MAX - 1);
+            newsize = newpos + 1;
+        }
+        newbuf = (char*)realloc(oself->buf, newsize);
+        if (!newbuf) {
+            PyErr_SetString(PyExc_MemoryError,"out of memory");
+            return -1;
+        }
+        oself->buf_size = (Py_ssize_t)newsize;
+        oself->buf = newbuf;
+    }
+
+    if (oself->string_size < oself->pos) {
+        /* In case of overseek, pad with null bytes the buffer region between
+           the end of stream and the current position.
+
+          0   lo      string_size                           hi
+          |   |<---used--->|<----------available----------->|
+          |   |            <--to pad-->|<---to write--->    |
+          0   buf                   position
+        */
+        memset(oself->buf + oself->string_size, '\0',
+               (oself->pos - oself->string_size) * sizeof(char));
+    }
+
+    memcpy(oself->buf + oself->pos, c, len);
+
+    oself->pos = newpos;
+
+    if (oself->string_size < oself->pos) {
+        oself->string_size = oself->pos;
+    }
+
+    return (int)len;
+}
+
+static PyObject *
+IO_cgetval(PyObject *self) {
+    if (!IO__opencheck(IOOOBJECT(self))) return NULL;
+    assert(IOOOBJECT(self)->pos >= 0);
+    return PyBytes_FromStringAndSize(((IOobject*)self)->buf,
+                                     ((IOobject*)self)->pos);
+}
+#endif
+
+
 /**
  * A cache of the spec_args for a set or list,
  * so we don't have to keep calling PyTuple_GET_ITEM.
@@ -216,11 +347,12 @@ parse_set_list_args(SetListTypeArgs* dest, PyObject* typeargs) {
     return false;
   }
 
-  dest->element_type = PyInt_AsLong(PyTuple_GET_ITEM(typeargs, 0));
-  if (INT_CONV_ERROR_OCCURRED(dest->element_type)) {
+  long element_type = PyInt_AsLong(PyTuple_GET_ITEM(typeargs, 0));
+  if (INT_CONV_ERROR_OCCURRED(element_type)) {
     return false;
   }
 
+  dest->element_type = element_type;
   dest->typeargs = PyTuple_GET_ITEM(typeargs, 1);
 
   return true;
@@ -233,16 +365,18 @@ parse_map_args(MapTypeArgs* dest, PyObject* typeargs) {
     return false;
   }
 
-  dest->ktag = PyInt_AsLong(PyTuple_GET_ITEM(typeargs, 0));
-  if (INT_CONV_ERROR_OCCURRED(dest->ktag)) {
+  long ktag = PyInt_AsLong(PyTuple_GET_ITEM(typeargs, 0));
+  if (INT_CONV_ERROR_OCCURRED(ktag)) {
     return false;
   }
 
-  dest->vtag = PyInt_AsLong(PyTuple_GET_ITEM(typeargs, 2));
-  if (INT_CONV_ERROR_OCCURRED(dest->vtag)) {
+  long vtag = PyInt_AsLong(PyTuple_GET_ITEM(typeargs, 2));
+  if (INT_CONV_ERROR_OCCURRED(vtag)) {
     return false;
   }
 
+  dest->ktag = ktag;
+  dest->vtag = vtag;
   dest->ktypeargs = PyTuple_GET_ITEM(typeargs, 1);
   dest->vtypeargs = PyTuple_GET_ITEM(typeargs, 3);
 
@@ -264,27 +398,29 @@ parse_struct_args(StructTypeArgs* dest, PyObject* typeargs) {
 
 static int
 parse_struct_item_spec(StructItemSpec* dest, PyObject* spec_tuple) {
-
   // i'd like to use ParseArgs here, but it seems to be a bottleneck.
   if (PyTuple_Size(spec_tuple) != 6) {
     PyErr_SetString(PyExc_TypeError, "expecting 6 arguments for spec tuple");
     return false;
   }
 
-  dest->tag = PyInt_AsLong(PyTuple_GET_ITEM(spec_tuple, 0));
-  if (INT_CONV_ERROR_OCCURRED(dest->tag)) {
+  long tag = PyInt_AsLong(PyTuple_GET_ITEM(spec_tuple, 0));
+  if (INT_CONV_ERROR_OCCURRED(tag)) {
     return false;
   }
 
-  dest->type = PyInt_AsLong(PyTuple_GET_ITEM(spec_tuple, 1));
-  if (INT_CONV_ERROR_OCCURRED(dest->type)) {
+  long type = PyInt_AsLong(PyTuple_GET_ITEM(spec_tuple, 1));
+  if (INT_CONV_ERROR_OCCURRED(type)) {
     return false;
   }
 
+  dest->tag = tag;
+  dest->type = type;
   dest->attrname = PyTuple_GET_ITEM(spec_tuple, 2);
   dest->typeargs = PyTuple_GET_ITEM(spec_tuple, 3);
   dest->defval = PyTuple_GET_ITEM(spec_tuple, 4);
   // Arg #5 is the 'required' field, which is ignored when serializing.
+
   return true;
 }
 
@@ -297,22 +433,38 @@ parse_struct_item_spec(StructItemSpec* dest, PyObject* spec_tuple) {
 
 static void writeByte(PyObject* outbuf, int8_t val) {
   int8_t net = val;
+#if PY_MAJOR_VERSION >= 3
+  O_cwrite(outbuf, (char*)&net, sizeof(int8_t));
+#else
   PycStringIO->cwrite(outbuf, (char*)&net, sizeof(int8_t));
+#endif
 }
 
 static void writeI16(PyObject* outbuf, int16_t val) {
   int16_t net = (int16_t)htons(val);
+#if PY_MAJOR_VERSION >= 3
+  O_cwrite(outbuf, (char*)&net, sizeof(int16_t));
+#else
   PycStringIO->cwrite(outbuf, (char*)&net, sizeof(int16_t));
+#endif
 }
 
 static void writeI32(PyObject* outbuf, int32_t val) {
   int32_t net = (int32_t)htonl(val);
+#if PY_MAJOR_VERSION >= 3
+  O_cwrite(outbuf, (char*)&net, sizeof(int32_t));
+#else
   PycStringIO->cwrite(outbuf, (char*)&net, sizeof(int32_t));
+#endif
 }
 
 static void writeI64(PyObject* outbuf, int64_t val) {
   int64_t net = (int64_t)htonll(val);
+#if PY_MAJOR_VERSION >= 3
+  O_cwrite(outbuf, (char*)&net, sizeof(int64_t));
+#else
   PycStringIO->cwrite(outbuf, (char*)&net, sizeof(int64_t));
+#endif
 }
 
 static void writeDouble(PyObject* outbuf, double dub) {
@@ -428,14 +580,34 @@ output_val(PyObject* output, PyObject* value, TType type, PyObject* typeargs) {
   }
 
   case T_STRING: {
+#if PY_MAJOR_VERSION >= 3
+    bool encoded = false;
+    if (!PyBytes_Check(value)) {
+      // Assume can call encode and return a bytes
+      value = PyObject_CallMethod(value, "encode", "()");
+      if (!PyBytes_Check(value)) {
+        PyErr_SetString(PyExc_TypeError, "can not encode");
+        return false;
+      }
+      encoded = true;
+    }
+    Py_ssize_t len = PyBytes_Size(value);
+#else
     Py_ssize_t len = PyString_Size(value);
-
+#endif
     if (!check_ssize_t_32(len)) {
       return false;
     }
 
     writeI32(output, (int32_t) len);
+#if PY_MAJOR_VERSION >= 3
+    O_cwrite(output, PyBytes_AsString(value), (int32_t) len);
+    if (encoded) {
+      Py_DECREF(value);
+    }
+#else
     PycStringIO->cwrite(output, PyString_AsString(value), (int32_t) len);
+#endif
     break;
   }
 
@@ -605,10 +777,17 @@ encode_binary(PyObject *self, PyObject *args) {
   if (!PyArg_ParseTuple(args, "OO", &enc_obj, &type_args)) {
     return NULL;
   }
-
+#if PY_MAJOR_VERSION >= 3
+  buf = PyObject_CallMethod(Python3IO, "BytesIO", "()");
+#else
   buf = PycStringIO->NewOutput(INIT_OUTBUF_SIZE);
+#endif
   if (output_val(buf, enc_obj, T_STRUCT, type_args)) {
+#if PY_MAJOR_VERSION >= 3
+    ret = IO_cgetval(buf);
+#else
     ret = PycStringIO->cgetvalue(buf);
+#endif
   }
 
   Py_DECREF(buf);
@@ -635,7 +814,11 @@ decode_buffer_from_obj(DecodeBuffer* dest, PyObject* obj) {
     return false;
   }
 
+#if PY_MAJOR_VERSION >= 3
+  if (!PyObject_TypeCheck(dest->stringiobuf, BytesIOType)) {
+#else
   if (!PycStringIO_InputCheck(dest->stringiobuf)) {
+#endif
     free_decodebuf(dest);
     PyErr_SetString(PyExc_TypeError, "expecting stringio input");
     return false;
@@ -663,9 +846,11 @@ static bool readBytes(DecodeBuffer* input, char** output, int len) {
   // TODO(dreiss): Don't fear the malloc.  Think about taking a copy of
   //               the partial read instead of forcing the transport
   //               to prepend it to its buffer.
-
+#if PY_MAJOR_VERSION >= 3
+  read = IO_cread(input->stringiobuf, output, len);
+#else
   read = PycStringIO->cread(input->stringiobuf, output, len);
-
+#endif
   if (read == len) {
     return true;
   } else if (read == -1) {
@@ -673,9 +858,14 @@ static bool readBytes(DecodeBuffer* input, char** output, int len) {
   } else {
     PyObject* newiobuf;
 
-    // using building functions as this is a rare codepath
+    // using buildin functions as this is a rare codepath
+#if PY_MAJOR_VERSION >= 3
+    newiobuf = PyObject_CallFunction(
+        input->refill_callable, "y#i", *output, read, len, NULL);
+#else
     newiobuf = PyObject_CallFunction(
         input->refill_callable, "s#i", *output, read, len, NULL);
+#endif
     if (newiobuf == NULL) {
       return false;
     }
@@ -683,9 +873,11 @@ static bool readBytes(DecodeBuffer* input, char** output, int len) {
     // must do this *AFTER* the call so that we don't deref the io buffer
     Py_CLEAR(input->stringiobuf);
     input->stringiobuf = newiobuf;
-
+#if PY_MAJOR_VERSION >= 3
+    read = IO_cread(input->stringiobuf, output, len);
+#else
     read = PycStringIO->cread(input->stringiobuf, output, len);
-
+#endif
     if (read == len) {
       return true;
     } else if (read == -1) {
@@ -763,7 +955,7 @@ static float readFloat(DecodeBuffer* input) {
 
 static bool
 checkTypeByte(DecodeBuffer* input, TType expected) {
-  TType got = readByte(input);
+  int8_t got = readByte(input);
   if (INT_CONV_ERROR_OCCURRED(got)) {
     return false;
   }
@@ -808,7 +1000,7 @@ skip(DecodeBuffer* input, TType type) {
 
   case T_LIST:
   case T_SET: {
-    TType etype;
+    int8_t etype;
     int len, i;
 
     etype = readByte(input);
@@ -830,7 +1022,7 @@ skip(DecodeBuffer* input, TType type) {
   }
 
   case T_MAP: {
-    TType ktype, vtype;
+    int8_t ktype, vtype;
     int len, i;
 
     ktype = readByte(input);
@@ -858,15 +1050,16 @@ skip(DecodeBuffer* input, TType type) {
 
   case T_STRUCT: {
     while (true) {
-      TType type;
+      int8_t type;
 
       type = readByte(input);
       if (type == -1) {
         return false;
       }
 
-      if (type == T_STOP)
+      if (type == T_STOP) {
         break;
+      }
 
       SKIPBYTES(2); // tag
       if (!skip(input, type)) {
@@ -884,7 +1077,6 @@ skip(DecodeBuffer* input, TType type) {
   default:
     PyErr_SetString(PyExc_TypeError, "Unexpected TType");
     return false;
-
   }
 
   return true;
@@ -906,7 +1098,7 @@ decode_struct(DecodeBuffer* input, PyObject* output, PyObject* spec_seq) {
   }
 
   while (true) {
-    TType type;
+    int8_t type;
     int16_t tag;
     PyObject* item_spec;
     PyObject* fieldval = NULL;
@@ -1232,24 +1424,98 @@ static PyMethodDef ThriftFastBinaryMethods[] = {
   {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 
+#if PY_MAJOR_VERSION >= 3
+struct module_state {
+  PyObject *error;
+};
+
+#define GETSTATE(m) ((struct module_state*)PyModule_GetState(m))
+
+static int fastbinary_traverse(PyObject *m, visitproc visit, void *arg) {
+  Py_VISIT(GETSTATE(m)->error);
+  return 0;
+}
+
+static int fastbinary_clear(PyObject *m) {
+  Py_CLEAR(GETSTATE(m)->error);
+  return 0;
+}
+
+static struct PyModuleDef ThriftFastBinaryModuleDef = {
+  PyModuleDef_HEAD_INIT,
+  "thrift.protocol.fastbinary",
+  NULL,
+  sizeof(struct module_state),
+  ThriftFastBinaryMethods,
+  NULL,
+  fastbinary_traverse,
+  fastbinary_clear,
+  NULL
+};
+
+PyObject*
+PyInit_fastbinary(void) {
+  Python3IO = PyImport_ImportModule("io");
+  if (Python3IO == NULL) {
+    return NULL;
+  }
+
+  // I don't know a better way to get a type object in c
+  PyObject *bytesio = PyObject_CallMethod(Python3IO, "BytesIO", "()");
+  BytesIOType = (PyTypeObject*)PyObject_Type(bytesio);
+
+  PyObject *module = PyModule_Create(&ThriftFastBinaryModuleDef);
+  if (module == NULL) {
+    Py_DECREF(Python3IO);
+    Py_DECREF(bytesio);
+    Py_DECREF(BytesIOType);
+    return NULL;
+  }
+
+  struct module_state *st = GETSTATE(module);
+
+  st->error = PyErr_NewException("fastbinary.Error", NULL, NULL);
+  if (st->error == NULL) {
+    Py_DECREF(Python3IO);
+    Py_DECREF(bytesio);
+    Py_DECREF(BytesIOType);
+    Py_DECREF(module);
+    return NULL;
+  }
+
+  Py_DECREF(bytesio);
+#else
 PyMODINIT_FUNC
 initfastbinary(void) {
-#define INIT_INTERN_STRING(value) \
-  do { \
-    INTERN_STRING(value) = PyString_InternFromString(#value); \
-    if(!INTERN_STRING(value)) return; \
-  } while(0)
-
-  INIT_INTERN_STRING(cstringio_buf);
-  INIT_INTERN_STRING(cstringio_refill);
-#undef INIT_INTERN_STRING
-
   PycString_IMPORT;
   if (PycStringIO == NULL) return;
 
   PyObject* module =
     Py_InitModule("thrift.protocol.fastbinary", ThriftFastBinaryMethods);
+#endif
+
+#if PY_MAJOR_VERSION >= 3
+#define INIT_INTERN_STRING(value) \
+  do { \
+    INTERN_STRING(value) = PyUnicode_InternFromString(#value); \
+    if(!INTERN_STRING(value)) return NULL; \
+  } while(0)
+#else
+#define INIT_INTERN_STRING(value) \
+  do { \
+    INTERN_STRING(value) = PyString_InternFromString(#value); \
+    if(!INTERN_STRING(value)) return; \
+  } while(0)
+#endif
+
+  INIT_INTERN_STRING(cstringio_buf);
+  INIT_INTERN_STRING(cstringio_refill);
+#undef INIT_INTERN_STRING
 
   // Version one of fastbinary.
   (void) PyModule_AddIntConstant(module, "version", 2);
+
+#if PY_MAJOR_VERSION >= 3
+  return module;
+#endif
 }

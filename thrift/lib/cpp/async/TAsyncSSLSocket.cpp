@@ -1,21 +1,19 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
+
 #include "thrift/lib/cpp/async/TAsyncSSLSocket.h"
 
 #include "thrift/lib/cpp/TLogging.h"
@@ -190,13 +188,18 @@ class CorkGuard {
 };
 
 void setup_SSL_CTX(SSL_CTX *ctx) {
+#ifdef SSL_MODE_RELEASE_BUFFERS
   SSL_CTX_set_mode(ctx,
                    SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER |
                    SSL_MODE_ENABLE_PARTIAL_WRITE
-#ifdef SSL_MODE_RELEASE_BUFFERS
                    | SSL_MODE_RELEASE_BUFFERS
-#endif
                    );
+#else
+  SSL_CTX_set_mode(ctx,
+                   SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER |
+                   SSL_MODE_ENABLE_PARTIAL_WRITE
+                   );
+#endif
 }
 
 BIO_METHOD eorAwareBioMethod;
@@ -428,9 +431,15 @@ void TAsyncSSLSocket::invalidState(HandshakeCallback* callback) {
   }
 }
 
-void TAsyncSSLSocket::sslAccept(HandshakeCallback* callback, uint32_t timeout) {
+void TAsyncSSLSocket::sslAccept(HandshakeCallback* callback,
+                                uint32_t timeout,
+                                bool verifyPeer,
+                                bool requireClientCert) {
   DestructorGuard dg(this);
   assert(eventBase_->isInEventBaseThread());
+
+  verifyPeer_ = verifyPeer;
+  requireClientCert_ = requireClientCert;
 
   // Make sure we're in the uninitialized state
   if (!server_ || sslState_ != STATE_UNINIT || handshakeCallback_ != nullptr) {
@@ -608,9 +617,12 @@ void TAsyncSSLSocket::connect(ConnectCallback* callback,
 }
 
 void TAsyncSSLSocket::sslConnect(HandshakeCallback* callback,
-                                 uint64_t timeout) {
+                                 uint64_t timeout,
+                                 bool verifyPeer) {
   DestructorGuard dg(this);
   assert(eventBase_->isInEventBaseThread());
+
+  verifyPeer_ = verifyPeer;
 
   // Make sure we're in the uninitialized state
   if (server_ || sslState_ != STATE_UNINIT || handshakeCallback_ != nullptr) {
@@ -630,6 +642,11 @@ void TAsyncSSLSocket::sslConnect(HandshakeCallback* callback,
             this, fd_, e.what());
     return failHandshake(__func__, ex);
   }
+
+  if (verifyPeer) {
+    SSL_set_verify(ssl_, SSL_VERIFY_PEER, TAsyncSSLSocket::sslVerifyCallback);
+  }
+
   SSL_set_fd(ssl_, fd_);
   if (sslSession_ != nullptr) {
     SSL_set_session(ssl_, sslSession_);
@@ -811,7 +828,7 @@ void TAsyncSSLSocket::checkForImmediateRead() noexcept {
   // openssl may have buffered data that it read from the socket already.
   // In this case we have to process it immediately, rather than waiting for
   // the socket to become readable again.
-  if (SSL_pending(ssl_) > 0) {
+  if (ssl_ != nullptr && SSL_pending(ssl_) > 0) {
     TAsyncSocket::handleRead();
   }
 }
@@ -867,6 +884,15 @@ TAsyncSSLSocket::handleAccept() noexcept {
     }
     SSL_set_fd(ssl_, fd_);
     SSL_set_ex_data(ssl_, getSSLExDataIndex(), this);
+
+    if (verifyPeer_) {
+      int mode = SSL_VERIFY_PEER;
+      if (requireClientCert_) {
+        mode |= SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+      }
+      SSL_set_verify(
+          ssl_, mode, TAsyncSSLSocket::sslVerifyCallback);
+    }
   }
 
   errno = 0;
@@ -1300,6 +1326,19 @@ int TAsyncSSLSocket::eorAwareBioWrite(BIO *b, const char *in, int inl) {
       BIO_set_retry_write(b);
   }
   return(ret);
+}
+
+int TAsyncSSLSocket::sslVerifyCallback(int preverifyOk,
+                                       X509_STORE_CTX* x509Ctx) {
+  SSL* ssl = (SSL*) X509_STORE_CTX_get_ex_data(
+    x509Ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
+  TAsyncSSLSocket* self = TAsyncSSLSocket::getFromSSL(ssl);
+
+  T_DEBUG_L(3, "TAsyncSSLSocket::sslVerifyCallback() this=%p, "
+            "fd=%d, preverifyOk=%d", self, self->fd_, preverifyOk);
+  return (self->handshakeCallback_) ?
+    self->handshakeCallback_->handshakeVerify(self, preverifyOk, x509Ctx) :
+    preverifyOk;
 }
 
 }}} // apache::thrift::async

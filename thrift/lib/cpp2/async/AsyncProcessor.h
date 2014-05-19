@@ -33,16 +33,79 @@
 #include "folly/String.h"
 #include "folly/MoveWrapper.h"
 
-using apache::thrift::TProcessorBase;
-using apache::thrift::TException;
-using apache::thrift::transport::THeader;
-using folly::makeMoveWrapper;
-
 namespace apache { namespace thrift {
 
 enum class SerializationThread {
   CURRENT,
   EVENT_BASE
+};
+
+class EventTask : public virtual apache::thrift::concurrency::Runnable {
+ public:
+  EventTask(std::function<void()>&& taskFunc,
+  apache::thrift::ResponseChannel::Request* req,
+    apache::thrift::async::TEventBase* base,
+    bool oneway)
+      : taskFunc_(std::move(taskFunc))
+      , req_(req)
+      , base_(base)
+      , oneway_(oneway) {
+}
+
+  void run() {
+    if (!oneway_) {
+      if (req_ && !req_->isActive()) {
+        auto req = req_;
+        base_->runInEventBaseThread([req]() {
+          delete req;
+        });
+
+        return;
+      }
+    }
+    taskFunc_();
+  }
+
+  void expired() {
+    if (!oneway_) {
+      auto req = req_;
+      if (req) {
+        base_->runInEventBaseThread([req] () {
+            apache::thrift::TApplicationException ex(
+              "Failed to add task to queue, too full");
+            req->sendError(std::make_exception_ptr(ex), kOverloadedErrorCode);
+            delete req;
+          });
+      }
+    }
+  }
+
+ private:
+  std::function<void()> taskFunc_;
+  apache::thrift::ResponseChannel::Request* req_;
+  apache::thrift::async::TEventBase* base_;
+  bool oneway_;
+};
+
+class PriorityEventTask : public apache::thrift::concurrency::PriorityRunnable,
+                          public EventTask {
+ public:
+  PriorityEventTask(
+    apache::thrift::concurrency::PriorityThreadManager::PRIORITY priority,
+    std::function<void()>&& taskFunc,
+    apache::thrift::ResponseChannel::Request* req,
+    apache::thrift::async::TEventBase* base,
+    bool oneway)
+      : EventTask(std::move(taskFunc), req, base, oneway)
+      , priority_(priority) {}
+
+  apache::thrift::concurrency::PriorityThreadManager::PRIORITY
+  getPriority() const {
+    return priority_;
+  }
+  using EventTask::run;
+ private:
+  apache::thrift::concurrency::PriorityThreadManager::PRIORITY priority_;
 };
 
 class AsyncProcessor : public TProcessorBase {
@@ -57,7 +120,7 @@ class AsyncProcessor : public TProcessorBase {
                        apache::thrift::concurrency::ThreadManager* tm) = 0;
 
   virtual bool isOnewayMethod(const folly::IOBuf* buf,
-                              const THeader* header) = 0;
+                              const transport::THeader* header) = 0;
 
 };
 
@@ -122,6 +185,66 @@ class GeneratedAsyncProcessor : public AsyncProcessor {
     prot->writeMessageEnd();
     return queue;
   }
+
+  template <typename ProtocolIn_, typename ProtocolOut_,
+            typename ProcessFunc, typename ChildType>
+  static void processInThread(
+      std::unique_ptr<apache::thrift::ResponseChannel::Request> req,
+      std::unique_ptr<folly::IOBuf> buf,
+      std::unique_ptr<ProtocolIn_> iprot,
+      apache::thrift::Cpp2RequestContext* ctx,
+      apache::thrift::async::TEventBase* eb,
+      apache::thrift::concurrency::ThreadManager* tm,
+      apache::thrift::concurrency::PRIORITY pri,
+      bool oneway,
+      ProcessFunc processFunc,
+      ChildType* childClass) {
+    using folly::makeMoveWrapper;
+    if (oneway) {
+      if (!req->isOneway()) {
+        req->sendReply(std::unique_ptr<folly::IOBuf>());
+      }
+    }
+    auto preq = req.get();
+    auto iprot_holder = folly::makeMoveWrapper(std::move(iprot));
+    auto buf_mw = folly::makeMoveWrapper(std::move(buf));
+    try {
+      tm->add(
+        std::make_shared<apache::thrift::PriorityEventTask>(
+          pri,
+          [=]() mutable {
+            auto req_mw = folly::makeMoveWrapper(
+              std::unique_ptr<apache::thrift::ResponseChannel::Request>(preq));
+            if ((*req_mw)->getTimestamps().processBegin != 0) {
+              // Since this request was queued, reset the processBegin
+              // time to the actual start time, and not the queue time.
+              (*req_mw)->getTimestamps().processBegin =
+                apache::thrift::concurrency::Util::currentTimeUsec();
+            }
+            // Oneway request won't be canceled if expired. see
+            // D1006482 for furhter details.  TODO: fix this
+            if (!oneway) {
+              if (!(*req_mw)->isActive()) {
+                eb->runInEventBaseThread([=]() mutable {
+                  delete req_mw->release();
+                });
+                return;
+              }
+            }
+            (childClass->*processFunc)(std::move(*req_mw), std::move(*buf_mw),
+                        std::move(*iprot_holder), ctx, eb, tm);
+
+          },
+          preq, eb, oneway));
+      req.release();
+    } catch (const std::exception& e) {
+      if (!oneway) {
+        apache::thrift::TApplicationException ex(
+          "Failed to add task to queue, too full");
+        req->sendError(std::make_exception_ptr(ex), kOverloadedErrorCode);
+      }
+    }
+  }
 };
 
 /**
@@ -168,7 +291,8 @@ class HandlerCallbackBase {
       eb_(eb),
       tm_(tm),
       reqCtx_(reqCtx),
-      protoSeqId_(0) {}
+      protoSeqId_(0) {
+  }
 
   virtual ~HandlerCallbackBase() {
   }
@@ -223,6 +347,10 @@ class HandlerCallbackBase {
     // If req_ is nullptr probably it is not managed by this HandlerCallback
     // object and we just return true. An example can be found in task 3106731
     return !req_ || req_->isActive();
+  }
+
+  ResponseChannel::Request* getRequest() {
+    return req_.get();
   }
 
   void runInQueue(
@@ -289,7 +417,7 @@ class HandlerCallback : public HandlerCallbackBase {
   typedef T ResultType;
 
   HandlerCallback()
-      : cp_(NULL) {}
+      : cp_(nullptr) {}
 
   HandlerCallback(
     std::unique_ptr<ResponseChannel::Request> req,
@@ -363,7 +491,7 @@ class HandlerCallback<std::unique_ptr<T>> : public HandlerCallbackBase {
   typedef T ResultType;
 
   HandlerCallback()
-      : cp_(NULL) {}
+      : cp_(nullptr) {}
 
   HandlerCallback(
     std::unique_ptr<ResponseChannel::Request> req,
@@ -393,7 +521,7 @@ class HandlerCallback<std::unique_ptr<T>> : public HandlerCallbackBase {
       result(r);
       delete this;
     } else {
-      auto r_mw = makeMoveWrapper(std::move(r));
+      auto r_mw = folly::makeMoveWrapper(std::move(r));
       getEventBase()->runInEventBaseThread([=](){
         this->result(*r_mw);
         delete this;
@@ -456,7 +584,7 @@ class HandlerCallback<void> : public HandlerCallbackBase {
   typedef void ResultType;
 
   HandlerCallback()
-      : cp_(NULL) {}
+      : cp_(nullptr) {}
 
   HandlerCallback(
     std::unique_ptr<ResponseChannel::Request> req,
@@ -507,36 +635,6 @@ class HandlerCallback<void> : public HandlerCallbackBase {
   }
 
   cob_ptr cp_;
-};
-
-class EventTask : public virtual apache::thrift::concurrency::Runnable {
- public:
-  /* implicit */ EventTask(std::function<void()>&& taskFunc)
-      : taskFunc_(std::move(taskFunc)) {}
-
-  void run() {
-    taskFunc_();
-  }
-
- private:
-  std::function<void()> taskFunc_;
-};
-
-class PriorityEventTask : public apache::thrift::concurrency::PriorityRunnable,
-                          public EventTask {
- public:
-  PriorityEventTask(
-    apache::thrift::concurrency::PriorityThreadManager::PRIORITY priority,
-    std::function<void()>&& taskFunc)
-      : EventTask(std::move(taskFunc)), priority_(priority) {}
-
-  apache::thrift::concurrency::PriorityThreadManager::PRIORITY
-  getPriority() const {
-    return priority_;
-  }
-  using EventTask::run;
- private:
-  apache::thrift::concurrency::PriorityThreadManager::PRIORITY priority_;
 };
 
 class AsyncProcessorFactory {

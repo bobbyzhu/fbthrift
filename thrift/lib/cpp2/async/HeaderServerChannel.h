@@ -31,8 +31,6 @@
 
 #include <unordered_map>
 
-using apache::thrift::async::TDelayedDestruction;
-
 namespace apache { namespace thrift {
 
 /**
@@ -43,9 +41,7 @@ namespace apache { namespace thrift {
  */
 class HeaderServerChannel : public ResponseChannel,
                             public MessageChannel::RecvCallback,
-                            public SaslServer::Callback,
-                            protected Cpp2Channel,
-                            public apache::thrift::async::HHWheelTimer {
+                            protected Cpp2Channel {
  private:
   virtual ~HeaderServerChannel(){}
 
@@ -77,7 +73,7 @@ class HeaderServerChannel : public ResponseChannel,
     if (callback) {
       setReceiveCallback(this);
     } else {
-      setReceiveCallback(NULL);
+      setReceiveCallback(nullptr);
     }
   }
 
@@ -91,11 +87,6 @@ class HeaderServerChannel : public ResponseChannel,
                        std::unique_ptr<sample>);
   void messageChannelEOF();
   void messageReceiveError(std::exception_ptr&&);
-
-  // Interface from SaslServer::Callback
-  void saslSendClient(std::unique_ptr<folly::IOBuf>&&);
-  void saslError(std::exception_ptr&&);
-  void saslComplete();
 
   // Header framing
   virtual std::unique_ptr<folly::IOBuf>
@@ -236,6 +227,10 @@ class HeaderServerChannel : public ResponseChannel,
     Cpp2Channel::setQueueSends(queueSends);
   }
 
+  void closeNow() {
+    Cpp2Channel::closeNow();
+  }
+
 private:
   std::unique_ptr<folly::IOBuf> handleSecurityMessage(
       std::unique_ptr<folly::IOBuf>&& buf);
@@ -261,6 +256,19 @@ private:
   uint32_t sampleRate_;
 
   uint32_t timeoutSASL_;
+
+  apache::thrift::async::HHWheelTimer::UniquePtr timer_;
+
+  class SaslServerCallback : public SaslServer::Callback {
+   public:
+    explicit SaslServerCallback(HeaderServerChannel& channel)
+      : channel_(channel) {}
+    virtual void saslSendClient(std::unique_ptr<folly::IOBuf>&&);
+    virtual void saslError(std::exception_ptr&&);
+    virtual void saslComplete();
+   private:
+    HeaderServerChannel& channel_;
+  } saslServerCallback_;
 };
 
 }} // apache::thrift

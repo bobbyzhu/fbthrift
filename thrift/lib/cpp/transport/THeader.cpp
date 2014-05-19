@@ -1,20 +1,17 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include "thrift/lib/cpp/transport/THeader.h"
@@ -87,6 +84,7 @@ void THeader::setSecurityPolicy(THRIFT_SECURITY_POLICY policy) {
     case THRIFT_SECURITY_DISABLED: {
       clients[THRIFT_UNFRAMED_DEPRECATED] = true;
       clients[THRIFT_FRAMED_DEPRECATED] = true;
+      clients[THRIFT_HTTP_SERVER_TYPE] = true;
       clients[THRIFT_HTTP_CLIENT_TYPE] = true;
       clients[THRIFT_HEADER_CLIENT_TYPE] = true;
       clients[THRIFT_FRAMED_COMPACT] = true;
@@ -95,6 +93,7 @@ void THeader::setSecurityPolicy(THRIFT_SECURITY_POLICY policy) {
     case THRIFT_SECURITY_PERMITTED: {
       clients[THRIFT_UNFRAMED_DEPRECATED] = true;
       clients[THRIFT_FRAMED_DEPRECATED] = true;
+      clients[THRIFT_HTTP_SERVER_TYPE] = true;
       clients[THRIFT_HTTP_CLIENT_TYPE] = true;
       clients[THRIFT_HEADER_CLIENT_TYPE] = true;
       clients[THRIFT_HEADER_SASL_CLIENT_TYPE] = true;
@@ -195,8 +194,8 @@ unique_ptr<IOBuf> THeader::removeHeader(IOBufQueue* queue,
     }
 
     buf = std::move(queue->split(msgSize));
-  } else if (sz == HTTP_MAGIC) {
-    clientType = THRIFT_HTTP_CLIENT_TYPE;
+  } else if (sz == HTTP_SERVER_MAGIC) {
+    clientType = THRIFT_HTTP_SERVER_TYPE;
 
     // TODO: doesn't work with async case.
     // in sync THeader, wraps this in a THttpTransport.
@@ -204,6 +203,40 @@ unique_ptr<IOBuf> THeader::removeHeader(IOBufQueue* queue,
     // won't need to call coalesce.
 
     buf = queue->move();
+  } else if (sz == HTTP_CLIENT_MAGIC) {
+    clientType = THRIFT_HTTP_CLIENT_TYPE;
+
+    TMemoryBuffer memBuffer;
+    THttpClientParser parser;
+    parser.setDataBuffer(&memBuffer);
+    const IOBuf* headBuf = queue->front();
+    const IOBuf* nextBuf = headBuf;
+    bool success = false;
+    do {
+      auto remainingDataLen = nextBuf->length();
+      size_t offset = 0;
+      auto ioBufData = nextBuf->data();
+      do {
+        void* parserBuf;
+        size_t parserBufLen;
+        parser.getReadBuffer(&parserBuf, &parserBufLen);
+        size_t toCopyLen = std::min(parserBufLen, remainingDataLen);
+        memcpy(parserBuf, ioBufData + offset, toCopyLen);
+        success |= parser.readDataAvailable(toCopyLen);
+        remainingDataLen -= toCopyLen;
+        offset += toCopyLen;
+      } while (remainingDataLen > 0);
+      nextBuf = nextBuf->next();
+    } while (nextBuf != headBuf);
+    if (!success) {
+      // We don't have full data yet and we don't know how many bytes we need,
+      // but it is at least 1.
+      needed = 1;
+      return nullptr;
+    }
+    buf = std::move(memBuffer.cloneBufferAsIOBuf());
+    // Empty the queue
+    queue->move();
   } else {
     if (sz > MAX_FRAME_SIZE) {
       std::string err =
@@ -247,7 +280,7 @@ unique_ptr<IOBuf> THeader::removeHeader(IOBufQueue* queue,
       buf = queue->split(sz);
     } else if (compactFramed(magic)) {
       clientType = THRIFT_FRAMED_COMPACT;
-            // Trim off the frame size.
+      // Trim off the frame size.
       queue->trimStart(4);
       buf = queue->split(sz);
     } else if (HEADER_MAGIC == (magic & HEADER_MASK)) {
@@ -428,7 +461,7 @@ unique_ptr<IOBuf> THeader::readHeaderFormat(unique_ptr<IOBuf> buf) {
   // Untransform data section
   buf = untransform(std::move(buf));
 
-  if (protoId_ == T_JSON_PROTOCOL && clientType != THRIFT_HTTP_CLIENT_TYPE) {
+  if (protoId_ == T_JSON_PROTOCOL && clientType != THRIFT_HTTP_SERVER_TYPE) {
     throw TApplicationException(TApplicationException::UNSUPPORTED_CLIENT_TYPE,
                                 "Client is trying to send JSON without HTTP");
   }
@@ -785,7 +818,7 @@ unique_ptr<IOBuf> THeader::addHeader(unique_ptr<IOBuf> buf) {
   }
   size_t chainSize = buf->computeChainDataLength();
 
-  if (protoId_ == T_JSON_PROTOCOL && clientType != THRIFT_HTTP_CLIENT_TYPE) {
+  if (protoId_ == T_JSON_PROTOCOL && clientType != THRIFT_HTTP_SERVER_TYPE) {
     throw TTransportException(TTransportException::BAD_ARGS,
                               "Trying to send JSON without HTTP");
   }
@@ -938,9 +971,12 @@ unique_ptr<IOBuf> THeader::addHeader(unique_ptr<IOBuf> buf) {
     header->prependChain(std::move(buf));
     buf = std::move(header);
   } else if (clientType == THRIFT_UNFRAMED_DEPRECATED ||
-             clientType == THRIFT_HTTP_CLIENT_TYPE) {
+             clientType == THRIFT_HTTP_SERVER_TYPE) {
     // We just return buf
     // TODO: IOBufize httpTransport.
+  } else if (clientType == THRIFT_HTTP_CLIENT_TYPE) {
+    CHECK(httpClientParser_.get() != nullptr);
+    buf = std::move(httpClientParser_->constructHeader(std::move(buf)));
   } else {
     throw TTransportException(TTransportException::BAD_ARGS,
                               "Unknown client type");
@@ -988,6 +1024,11 @@ std::chrono::milliseconds THeader::getClientTimeout() {
 
 void THeader::setClientTimeout(std::chrono::milliseconds timeout) {
   setHeader(CLIENT_TIMEOUT_HEADER, folly::to<std::string>(timeout.count()));
+}
+
+void THeader::useAsHttpClient(const std::string& host, const std::string& uri) {
+  setClientType(THRIFT_HTTP_CLIENT_TYPE);
+  httpClientParser_.reset(new THttpClientParser(host, uri));
 }
 
 }}} // apache::thrift::transport

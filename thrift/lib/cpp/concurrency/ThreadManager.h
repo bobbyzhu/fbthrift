@@ -25,13 +25,20 @@
 #include <sys/types.h>
 #include <array>
 #include <unistd.h>
+#include "folly/RWSpinLock.h"
 #include "thrift/lib/cpp/concurrency/Monitor.h"
 #include "thrift/lib/cpp/concurrency/Thread.h"
+#include <gflags/gflags.h>
+
+#include "thrift/lib/cpp/concurrency/Util.h"
+
+DECLARE_bool(codel_enabled);
 
 namespace apache { namespace thrift { namespace concurrency {
 
 class Runnable;
 class ThreadFactory;
+class ThreadManagerObserver;
 
 /**
  * ThreadManager class
@@ -99,6 +106,8 @@ class ThreadManager {
   virtual std::shared_ptr<ThreadFactory> threadFactory() const = 0;
 
   virtual void threadFactory(std::shared_ptr<ThreadFactory> value) = 0;
+
+  virtual std::string getNamePrefix() const = 0;
 
   virtual void setNamePrefix(const std::string& name) = 0;
 
@@ -181,6 +190,7 @@ class ThreadManager {
    * the expired task.
    */
   virtual void setExpireCallback(ExpireCallback expireCallback) = 0;
+  virtual void setCodelCallback(ExpireCallback expireCallback) = 0;
 
   /**
    * Set a callback to be called when a worker thread is created.
@@ -216,10 +226,27 @@ class ThreadManager {
     runTimeUs = 0;
   }
 
+  class Observer {
+   public:
+    virtual ~Observer() {}
+
+    virtual void addStats(const std::string& threadPoolName,
+                          const SystemClockTimePoint& queueBegin,
+                          const SystemClockTimePoint& workBegin,
+                          const SystemClockTimePoint& workEnd) = 0;
+  };
+
+  static void setObserver(std::shared_ptr<Observer> observer);
+
+  virtual void enableCodel(bool) = 0;
+
   template <typename SemType>
   class ImplT;
 
   typedef ImplT<PosixSemaphore> Impl;
+ protected:
+  static folly::RWSpinLock observerLock_;
+  static std::shared_ptr<Observer> observer_;
 };
 
 /**

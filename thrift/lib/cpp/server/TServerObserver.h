@@ -66,9 +66,15 @@ class TServerObserver {
 
   virtual void taskKilled() {}
 
+  virtual void taskTimeout() {}
+
+  virtual void serverOverloaded() {}
+
   virtual void receivedRequest() {}
 
   virtual void queuedRequests(int32_t numRequests) {}
+
+  virtual void queueTimeout() {}
 
   virtual void sentReply() {}
 
@@ -80,9 +86,6 @@ class TServerObserver {
   inline uint32_t getSampleRate() const {
     return sampleRate_;
   }
-
-  virtual void loopSample(
-    int64_t busyTime, int64_t idleTime) = 0;
 
  protected:
   uint32_t sampleRate_;

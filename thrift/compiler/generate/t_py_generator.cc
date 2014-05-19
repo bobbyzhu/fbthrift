@@ -61,8 +61,18 @@ class t_py_generator : public t_generator {
     iter = parsed_options.find("slots");
     gen_slots_ = (iter != parsed_options.end());
 
+    iter = parsed_options.find("python3");
+    gen_python3_ = (iter != parsed_options.end());
+
     iter = parsed_options.find("twisted");
     gen_twisted_ = (iter != parsed_options.end());
+    if (gen_python3_ && gen_twisted_) {
+      throw "Twisted isn't supported in Python 3 yet";
+    }
+
+    if (gen_python3_ && gen_newstyle_) {
+      throw "Python 3 supports new style class by default";
+    }
 
     iter = parsed_options.find("utf8strings");
     gen_utf8strings_ = (iter != parsed_options.end());
@@ -248,6 +258,7 @@ class t_py_generator : public t_generator {
   std::string argument_list(t_struct* tstruct);
   std::string type_to_enum(t_type* ttype);
   std::string type_to_spec_args(t_type* ttype);
+  std::string py2or3(const std::string& py2str, const std::string& py3str);
 
   static bool is_valid_namespace(const std::string& sub_namespace) {
     return sub_namespace == "twisted";
@@ -285,6 +296,11 @@ class t_py_generator : public t_generator {
    * True iff we should generate __slots__ for thrift structs.
    */
   bool gen_slots_;
+
+  /**
+   * True iff we should generate Python 3 code.
+   */
+  bool gen_python3_;
 
   /**
    * True iff we should generate Twisted-friendly RPC services.
@@ -353,6 +369,7 @@ void t_py_generator::generate_json_field(ofstream& out,
     string conversion_function = "";
     t_base_type::t_base tbase = ((t_base_type*)type)->get_base();
     string number_limit = "";
+    string number_negative_limit = "";
     switch (tbase) {
       case t_base_type::TYPE_VOID:
       case t_base_type::TYPE_STRING:
@@ -360,12 +377,15 @@ void t_py_generator::generate_json_field(ofstream& out,
         break;
       case t_base_type::TYPE_BYTE:
         number_limit = "0x7f";
+        number_negative_limit = "-0x80";
         break;
       case t_base_type::TYPE_I16:
         number_limit = "0x7fff";
+        number_negative_limit = "-0x8000";
         break;
       case t_base_type::TYPE_I32:
-        number_limit = "0x7fffffffL";
+        number_limit = py2or3("0x7fffffffL", "0x7fffffff");
+        number_negative_limit = py2or3("-0x80000000L", "-0x80000000");
         break;
       case t_base_type::TYPE_I64:
         conversion_function = "long";
@@ -389,7 +409,8 @@ void t_py_generator::generate_json_field(ofstream& out,
     }
 
     if (!number_limit.empty()) {
-      indent(out) << "if abs(" << name << ") > " << number_limit << ":"
+      indent(out) << "if " << name << " > " << number_limit << " or "
+        << name << " < " << number_negative_limit << ":"
         << endl;
       indent_up();
       indent(out) << "raise TProtocolException(TProtocolException.INVALID_DATA,"
@@ -532,6 +553,7 @@ void t_py_generator::generate_json_map_key(ofstream& out,
     t_base_type::t_base tbase = ((t_base_type*)type)->get_base();
     string conversion_function = "";
     string number_limit = "";
+    string number_negative_limit = "";
     bool generate_assignment = true;
     switch (tbase) {
       case t_base_type::TYPE_STRING:
@@ -556,14 +578,17 @@ void t_py_generator::generate_json_map_key(ofstream& out,
       case t_base_type::TYPE_BYTE:
         conversion_function = "int";
         number_limit = "0x7f";
+        number_negative_limit = "-0x80";
         break;
       case t_base_type::TYPE_I16:
         conversion_function = "int";
         number_limit = "0x7fff";
+        number_negative_limit = "-0x8000";
         break;
       case t_base_type::TYPE_I32:
         conversion_function = "int";
-        number_limit = "0x7fffffffL";
+        number_limit = py2or3("0x7fffffffL", "0x7fffffff");
+        number_negative_limit = py2or3("-0x80000000L", "-0x80000000");
         break;
       case t_base_type::TYPE_I64:
         conversion_function = "long";
@@ -587,7 +612,8 @@ void t_py_generator::generate_json_map_key(ofstream& out,
     }
 
     if (!number_limit.empty()) {
-      indent(out) << "if abs(" << parsed_key << ") > " << number_limit << ":"
+      indent(out) << "if " << parsed_key << " > " << number_limit << " or "
+                  << parsed_key << " < " << number_negative_limit << ":"
                   << endl;
       indent_up();
       indent(out) << "raise TProtocolException(TProtocolException.INVALID_DATA,"
@@ -620,7 +646,7 @@ void t_py_generator::generate_json_reader(ofstream& out,
 
   for (f_iter = fields.begin(); f_iter != fields.end(); ++f_iter) {
     string field = (*f_iter)->get_name();
-    indent(out) << "if json_obj.has_key('" << field << "') "
+    indent(out) << "if '" << field << "' in json_obj "
                 << "and json_obj['" << field << "'] is not None:"
                 << endl;
     indent_up();
@@ -707,8 +733,8 @@ void t_py_generator::init_generator() {
   f_consts_ <<
     py_autogen_comment() << endl <<
     py_imports() << endl <<
-    "from ttypes import *" << endl <<
-    endl;
+    py2or3("from ttypes import *", "from .ttypes import *")
+    << endl << endl;
 }
 
 /**
@@ -938,13 +964,13 @@ string t_py_generator::render_const_value(t_type* type, t_const_value* value) {
     const map<t_const_value*, t_const_value*>& val = value->get_map();
     map<t_const_value*, t_const_value*>::const_iterator v_iter;
     for (v_iter = val.begin(); v_iter != val.end(); ++v_iter) {
-      t_type* field_type = NULL;
+      t_type* field_type = nullptr;
       for (f_iter = fields.begin(); f_iter != fields.end(); ++f_iter) {
         if ((*f_iter)->get_name() == v_iter->first->get_string()) {
           field_type = (*f_iter)->get_type();
         }
       }
-      if (field_type == NULL) {
+      if (field_type == nullptr) {
         throw "type error: " + type->get_name() +
           " has no field " + v_iter->first->get_string();
       }
@@ -1130,7 +1156,8 @@ void t_py_generator::generate_py_union(ofstream& out, t_struct* tstruct) {
   out <<
     indent() << "def __repr__(self):" << endl <<
     indent() << "  L = []" << endl <<
-    indent() << "  for key, value in self.__dict__.iteritems():" << endl <<
+    indent() << "  for key, value in self.__dict__."
+             << py2or3("iteritems", "items") << "():" << endl <<
     indent() << "    padding = ' ' * (len(key) + 1)" << endl <<
     indent() << "    value = pprint.pformat(value)" << endl <<
     indent() << "    value = padding.join(value.splitlines(True))" << endl <<
@@ -1224,7 +1251,11 @@ void t_py_generator::generate_py_union(ofstream& out, t_struct* tstruct) {
 
     for (auto& member: members) {
       auto n = member->get_name();
-      indent(out) << "if obj.has_key('" << n << "'):" << endl;
+      if (gen_python3_) {
+        indent(out) << "if '" << n << "' in obj:" << endl;
+      } else {
+        indent(out) << "if obj.has_key('" << n << "'):" << endl;
+      }
       indent_up();
       generate_json_field(out, member, "", "", "obj['" + n + "']");
       indent(out) << "self.set_" << n << "(" << n << ")" << endl;
@@ -1364,7 +1395,7 @@ void t_py_generator::generate_py_struct_definition(ofstream& out,
       // Initialize fields
       t_type* type = (*m_iter)->get_type();
       if (!type->is_base_type() && !type->is_enum() &&
-          (*m_iter)->get_value() != NULL) {
+          (*m_iter)->get_value() != nullptr) {
         indent(out) <<
           "if " << rename_reserved_keywords((*m_iter)->get_name()) << " is " <<
           "self.thrift_spec[" <<
@@ -1407,7 +1438,8 @@ void t_py_generator::generate_py_struct_definition(ofstream& out,
     out <<
       indent() << "def __repr__(self):" << endl <<
       indent() << "  L = []" << endl <<
-      indent() << "  for key, value in self.__dict__.iteritems():" << endl <<
+      indent() << "  for key, value in self.__dict__."
+               << py2or3("iteritems", "items") << "():" << endl <<
       indent() << "    padding = ' ' * (len(key) + 1)" << endl <<
       indent() << "    value = pprint.pformat(value)" << endl <<
       indent() << "    value = padding.join(value.splitlines(True))" << endl <<
@@ -1631,7 +1663,7 @@ void t_py_generator::generate_py_struct_writer(ofstream& out,
       "if self." << rename_reserved_keywords((*f_iter)->get_name()) <<
       " != None";
     if ((*f_iter)->get_req() == t_field::T_OPTIONAL &&
-        (*f_iter)->get_value() != NULL) {
+        (*f_iter)->get_value() != nullptr) {
       // An optional field with a value set should not be serialized if
       // the value equals the default value
       out << " and self." <<
@@ -1681,7 +1713,7 @@ void t_py_generator::generate_service(t_service* tservice) {
     py_autogen_comment() << endl <<
     py_imports() << endl;
 
-  if (tservice->get_extends() != NULL) {
+  if (tservice->get_extends() != nullptr) {
     f_service_ <<
       "import " << get_real_py_module(tservice->get_extends()->get_program(),
                                       gen_twisted_) << "."
@@ -1690,7 +1722,7 @@ void t_py_generator::generate_service(t_service* tservice) {
   }
 
   f_service_ <<
-    "from ttypes import *" << endl <<
+    py2or3("from ttypes import *", "from .ttypes import *") << endl <<
     "from thrift.Thrift import TProcessor" << endl <<
     render_fastbinary_includes() << endl;
 
@@ -1770,7 +1802,7 @@ void t_py_generator::generate_service_interface(t_service* tservice,
   string iface_prefix = with_context ? "Context" : "";
   string extends = "";
   string extends_if = "";
-  if (tservice->get_extends() != NULL) {
+  if (tservice->get_extends() != nullptr) {
     extends = type_name(tservice->get_extends());
     extends_if = "(" + extends + "." + iface_prefix + "Iface)";
   } else {
@@ -1814,7 +1846,7 @@ void t_py_generator::generate_service_interface(t_service* tservice,
 void t_py_generator::generate_service_client(t_service* tservice) {
   string extends = "";
   string extends_client = "";
-  if (tservice->get_extends() != NULL) {
+  if (tservice->get_extends() != nullptr) {
     extends = type_name(tservice->get_extends());
     if (gen_twisted_) {
       extends_client = "(" + extends + ".Client)";
@@ -1963,17 +1995,18 @@ void t_py_generator::generate_service_client(t_service* tservice) {
         rename_reserved_keywords((*fld_iter)->get_name()) << endl;
     }
 
+    std::string flush = (*f_iter)->is_oneway() ? "onewayFlush" : "flush";
     // Write to the stream
     if (gen_twisted_) {
       f_service_ <<
         indent() << "args.write(oprot)" << endl <<
         indent() << "oprot.writeMessageEnd()" << endl <<
-        indent() << "oprot.trans.flush()" << endl;
+        indent() << "oprot.trans." << flush << "()" << endl;
     } else {
       f_service_ <<
         indent() << "args.write(self._oprot)" << endl <<
         indent() << "self._oprot.writeMessageEnd()" << endl <<
-        indent() << "self._oprot.trans.flush()" << endl;
+        indent() << "self._oprot.trans." << flush << "()" << endl;
     }
 
     indent_down();
@@ -2111,12 +2144,13 @@ void t_py_generator::generate_service_remote(t_service* tservice) {
   f_remote <<
     "#!/usr/bin/env python\n" <<
     py_autogen_comment() << "\n"
+    "from __future__ import print_function\n"
     "import optparse\n"
     "import os\n"
     "import pprint\n"
     "import sys\n"
     "import traceback\n"
-    "from urlparse import urlparse\n"
+    "from " << py2or3("urlparse", "urllib.parse") << " import urlparse\n"
     "\n" <<
     // This has to be before thrift definitions
     // in case the environment is not correct.
@@ -2129,9 +2163,10 @@ void t_py_generator::generate_service_remote(t_service* tservice) {
     "from thrift.protocol import TJSONProtocol\n"
     "from thrift.protocol import THeaderProtocol\n"
     "\n"
-    "import " << rename_reserved_keywords(service_name_) << "\n"
-    "from ttypes import *\n"
-    "\n"
+    << py2or3("import ", "from . import ")
+    << rename_reserved_keywords(service_name_) << "\n"
+    << py2or3("from ttypes import *\n", "from .ttypes import *\n")
+    <<  "\n"
     "\n";
 
   // Emit a list of objects describing the service functions.
@@ -2149,7 +2184,7 @@ void t_py_generator::generate_service_remote(t_service* tservice) {
 
   set<string> processed_fns;
   for (t_service* cur_service = tservice;
-       cur_service != NULL;
+       cur_service != nullptr;
        cur_service = cur_service->get_extends()) {
     const vector<t_function*>& functions = cur_service->get_functions();
     for (vector<t_function*>::const_iterator it = functions.begin();
@@ -2256,7 +2291,6 @@ void t_py_generator::generate_service_remote(t_service* tservice) {
     "\n"
     "    if not args:\n"
     "        op.print_help(sys.stderr)\n"
-    "        print >> sys.stderr\n"
     "        print_functions(sys.stderr)\n"
     "        return os.EX_USAGE\n"
     "\n"
@@ -2267,13 +2301,13 @@ void t_py_generator::generate_service_remote(t_service* tservice) {
     "        fn = FUNCTIONS[fn_name]\n"
     "    except KeyError:\n"
     "        print_functions(sys.stderr)\n"
-    "        print >> sys.stderr, ('\\nerror: unknown function \"%s\"' %\n"
-    "                              fn_name)\n"
+    "        print('\\nerror: unknown function \"%s\"' % fn_name, \n"
+    "                 file=sys.stderr)\n"
     "        return os.EX_USAGE\n"
     "\n"
     "    if len(args) != len(fn.args) + 1:\n"
-    "        print >> sys.stderr, ('error: %s requires exactly %d arguments'%\n"
-    "                              (fn_name, len(fn.args)))\n"
+    "        print('error: %s requires exactly %d arguments'% \n"
+    "                 (fn_name, len(fn.args)), file=sys.stderr)\n"
     "        return os.EX_USAGE\n"
     "    fn_args = []\n"
     "    for arg, arg_info in zip(args[1:], fn.args):\n"
@@ -2287,8 +2321,8 @@ void t_py_generator::generate_service_remote(t_service* tservice) {
     "            value = eval(arg)\n"
     "        except:\n"
     "            traceback.print_exc(file=sys.stderr)\n"
-    "            print >> sys.stderr, ('\\nerror parsing argument \"%s\"' %\n"
-    "                                  (arg,))\n"
+    "            print('\\nerror parsing argument \"%s\"' % (arg,), \n"
+    "                     file=sys.stderr)\n"
     "            return os.EX_DATAERR\n"
     "        fn_args.append(value)\n"
     "\n"
@@ -2312,7 +2346,7 @@ void t_py_generator::generate_service_remote(t_service* tservice) {
     "        else:\n"
     "            transport = TTransport.TBufferedTransport(socket)\n"
     "    else:\n"
-    "        print >> sys.stderr, 'error: no --host or --url specified'\n"
+    "        print('error: no --host or --url specified', file=sys.stderr)\n"
     "        return os.EX_USAGE\n"
     "\n"
     "    # Create the protocol and client\n"
@@ -2374,7 +2408,7 @@ void t_py_generator::generate_service_server(t_service* tservice,
 
   string extends = "";
   string extends_processor = "";
-  if (tservice->get_extends() != NULL) {
+  if (tservice->get_extends() != nullptr) {
     extends = type_name(tservice->get_extends());
     extends_processor = extends + "." + class_prefix + "Processor, ";
   }
@@ -2442,6 +2476,10 @@ void t_py_generator::generate_service_server(t_service* tservice,
   // TODO(mcslee): validate message
 
   // HOT: dictionary function lookup
+  if (gen_python3_) {
+    f_service_ <<
+      indent() << "name = name.decode()" << endl;
+  }
   f_service_ <<
     indent() << "if name not in self._processMap:" << endl <<
     indent() << "  iprot.skip(TType.STRUCT)" << endl <<
@@ -2619,7 +2657,7 @@ void t_py_generator::generate_process_function(t_service* tservice,
          x_iter != xceptions.end(); ++x_iter, ++exc_num) {
       f_service_ <<
         indent() << "except " << type_name((*x_iter)->get_type())
-                 << ", exc" << exc_num << ":" << endl;
+                 << " as exc" << exc_num << ":" << endl;
       if (!tfunction->is_oneway()) {
         indent_up();
         f_service_ <<
@@ -2697,7 +2735,7 @@ void t_py_generator::generate_process_function(t_service* tservice,
           x_iter != xceptions.end(); ++x_iter, ++exc_num) {
       f_service_ <<
         indent() << "except " << type_name((*x_iter)->get_type())
-                 << ", exc" << exc_num << ":" << endl;
+                 << " as exc" << exc_num << ":" << endl;
       if (!tfunction->is_oneway()) {
         indent_up();
         f_service_ <<
@@ -2872,7 +2910,7 @@ void t_py_generator::generate_deserialize_container(ofstream &out,
   // For loop iterates over elements
   string i = tmp("_i");
   indent(out) <<
-    "for " << i << " in xrange(" << size << "):" << endl;
+    "for " << i << py2or3(" in xrange(", " in range(") << size << "):" << endl;
 
     indent_up();
 
@@ -3229,7 +3267,7 @@ void t_py_generator::generate_python_docstring(ofstream& out,
 string t_py_generator::declare_argument(t_field* tfield) {
   std::ostringstream result;
   result << rename_reserved_keywords(tfield->get_name()) << "=";
-  if (tfield->get_value() != NULL) {
+  if (tfield->get_value() != nullptr) {
     result << "thrift_spec[" <<
       tfield->get_key() << "][4]";
   } else {
@@ -3245,7 +3283,7 @@ string t_py_generator::declare_argument(t_field* tfield) {
  */
 string t_py_generator::render_field_default_value(t_field* tfield) {
   t_type* type = get_true_type(tfield->get_type());
-  if (tfield->get_value() != NULL) {
+  if (tfield->get_value() != nullptr) {
     return render_const_value(type, tfield->get_value());
   } else {
     return "None";
@@ -3314,7 +3352,7 @@ string t_py_generator::type_name(t_type* ttype) {
     return get_real_py_module(program, gen_twisted_) + "." +
       rename_reserved_keywords(ttype->get_name());
   }
-  if (program != NULL && program != program_) {
+  if (program != nullptr && program != program_) {
     return get_real_py_module(program, gen_twisted_) + ".ttypes." +
       rename_reserved_keywords(ttype->get_name());
   }
@@ -3397,6 +3435,13 @@ string t_py_generator::type_to_spec_args(t_type* ttype) {
   throw "INVALID TYPE IN type_to_spec_args: " + ttype->get_name();
 }
 
+/**
+ * Choose a py2 or py3 string.
+ */
+std::string t_py_generator::py2or3(const std::string& py2str,
+                                   const std::string& py3str) {
+  return gen_python3_ ? py3str : py2str;
+}
 
 THRIFT_REGISTER_GENERATOR(py, "Python",
 "    json:            Generate function to parse entity from json\n"
@@ -3404,6 +3449,7 @@ THRIFT_REGISTER_GENERATOR(py, "Python",
 "    slots:           Generate code using slots for instance members.\n"
 "    sort_keys:       Serialize maps in the ascending order of their keys.\n"
 "    thrift_port=NNN: Default port to use in remote client (default 9090).\n"
+"    python3:         Generate Python 3 code. Twisted not supported yet.\n"
 "    twisted:         Generate Twisted-friendly RPC services.\n"
 "    utf8strings:     Encode/decode strings using utf8 in the generated code.\n"
 );

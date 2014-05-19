@@ -1,22 +1,18 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
-
 
 #include "thrift/lib/cpp2/server/Cpp2Connection.h"
 
@@ -65,30 +61,19 @@ Cpp2Connection::Cpp2Connection(
     worker_->getServer()->setNonSaslEnabled(true);
   }
 
+  auto factory = worker_->getServer()->getSaslServerFactory();
+  if (factory) {
+    channel_->setSaslServer(
+      unique_ptr<SaslServer>(factory(asyncSocket->getEventBase()))
+    );
+    // Refresh the saslServer_ pointer in context_
+    context_.setSaslServer(channel_->getSaslServer());
+  }
+
   if (worker_->getServer()->getSaslEnabled() &&
       worker_->getServer()->getNonSaslEnabled()) {
-    // Check if we need to use a stub, otherwise set the kerberos principal
-    auto factory = worker_->getServer()->getSaslServerFactory();
-    if (factory) {
-      channel_->setSaslServer(
-        unique_ptr<SaslServer>(factory(asyncSocket->getEventBase()))
-      );
-    } else {
-      channel_->getSaslServer()->setServiceIdentity(
-        worker_->getServer()->getServicePrincipal());
-    }
     channel_->getHeader()->setSecurityPolicy(THRIFT_SECURITY_PERMITTED);
   } else if (worker_->getServer()->getSaslEnabled()) {
-    // Check if we need to use a stub, otherwise set the kerberos principal
-    auto factory = worker_->getServer()->getSaslServerFactory();
-    if (factory) {
-      channel_->setSaslServer(
-        unique_ptr<SaslServer>(factory(asyncSocket->getEventBase()))
-      );
-    } else {
-      channel_->getSaslServer()->setServiceIdentity(
-        worker_->getServer()->getServicePrincipal());
-    }
     channel_->getHeader()->setSecurityPolicy(THRIFT_SECURITY_REQUIRED);
   } else {
     // If neither is set, act as if non-sasl was specified.
@@ -109,6 +94,8 @@ Cpp2Connection::~Cpp2Connection() {
 void Cpp2Connection::stop() {
   cancelTimeout();
   for (auto req : activeRequests_) {
+    VLOG(1) << "Task killed due to channel close: " <<
+      context_.getPeerAddress()->describe();
     req->cancelRequest();
     auto observer = worker_->getServer()->getObserver();
     if (observer) {
@@ -124,6 +111,10 @@ void Cpp2Connection::stop() {
   if (handler) {
     handler->connectionDestroyed(&context_);
   }
+
+  // Release the socket to avoid long CLOSE_WAIT times
+  channel_->closeNow();
+  socket_.reset();
 }
 
 void Cpp2Connection::timeoutExpired() noexcept {
@@ -154,7 +145,7 @@ void Cpp2Connection::requestTimeoutExpired() {
     context_.getPeerAddress()->describe();
   auto observer = worker_->getServer()->getObserver();
   if (observer) {
-    observer->taskKilled();
+    observer->taskTimeout();
   }
 }
 
@@ -172,7 +163,12 @@ void Cpp2Connection::killRequest(
   auto server = worker_->getServer();
   auto observer = server->getObserver();
   if (observer) {
-    observer->taskKilled();
+    if (reason ==
+         TApplicationException::TApplicationExceptionType::LOADSHEDDING) {
+      observer->serverOverloaded();
+    } else {
+      observer->taskKilled();
+    }
   }
 
   // Nothing to do for Thrift oneway request.
@@ -218,7 +214,7 @@ void Cpp2Connection::requestReceived(
   }
 
   int activeRequests = worker_->activeRequests_;
-  activeRequests += worker_->getPendingCount();
+  activeRequests += worker_->pendingCount();
 
   if (server->isOverloaded(activeRequests)) {
     killRequest(*req,
@@ -237,7 +233,9 @@ void Cpp2Connection::requestReceived(
       observer->queuedRequests(
         server->getThreadManager()->pendingTaskCount());
       if (server->getIsUnevenLoad()) {
-        observer->activeRequests(server->getGlobalActiveRequests());
+        observer->activeRequests(
+          server->getGlobalActiveRequests() +
+          server->getPendingCount());
       }
     }
   }
@@ -288,7 +286,8 @@ void Cpp2Connection::channelClosed(std::exception_ptr&& ex) {
   });
 
   VLOG(4) << "Channel " <<
-    context_.getPeerAddress()->describe() << " closed";
+    context_.getPeerAddress()->describe() << " closed: " <<
+    folly::exceptionStr(ex);
 }
 
 void Cpp2Connection::removeRequest(Cpp2Request *req) {

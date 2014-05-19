@@ -23,6 +23,7 @@
 #include "thrift/lib/cpp2/protocol/BinaryProtocol.h"
 
 #include <limits>
+#include <string>
 #include <boost/static_assert.hpp>
 
 namespace apache { namespace thrift {
@@ -165,15 +166,22 @@ uint32_t BinaryProtocolWriter::writeBinary(const StrType& str) {
 
 uint32_t BinaryProtocolWriter::writeBinary(
     const std::unique_ptr<folly::IOBuf>& str) {
-  size_t size = str->computeChainDataLength();
+  DCHECK(str);
+  if (!str) {
+    return writeI32(0);
+  }
+  return writeBinary(*str);
+}
+
+uint32_t BinaryProtocolWriter::writeBinary(
+    const folly::IOBuf& str) {
+  size_t size = str.computeChainDataLength();
   // leave room for size
   if (size > std::numeric_limits<uint32_t>::max() - serializedSizeI32()) {
     throw TProtocolException(TProtocolException::SIZE_LIMIT);
   }
   uint32_t result = writeI32((int32_t)size);
-  if (str) {
-    out_.insert(str->clone());
-  }
+  out_.insert(str.clone());
   return result + size;
 }
 
@@ -278,7 +286,12 @@ uint32_t BinaryProtocolWriter::serializedSizeString(const StrType& str) {
 
 uint32_t BinaryProtocolWriter::serializedSizeBinary(
     const std::unique_ptr<folly::IOBuf>& v) {
-  size_t size = v ? v->computeChainDataLength() : 0;
+  return v ? serializedSizeBinary(*v) : 0;
+}
+
+uint32_t BinaryProtocolWriter::serializedSizeBinary(
+    const folly::IOBuf& v) {
+  size_t size = v.computeChainDataLength();
   if (size > std::numeric_limits<uint32_t>::max() - serializedSizeI32()) {
     throw TProtocolException(TProtocolException::SIZE_LIMIT);
   }
@@ -308,16 +321,18 @@ uint32_t BinaryProtocolReader::readMessageBegin(std::string& name,
     int32_t version = sz & VERSION_MASK;
     if (version != VERSION_1) {
       throw TProtocolException(TProtocolException::BAD_VERSION,
-                               "Bad version identifier");
+                               "Bad version identifier, sz=" +
+                                 std::to_string(sz));
     }
     messageType = (MessageType)(sz & 0x000000ff);
     result += readString(name);
     result += readI32(seqid);
   } else {
     if (this->strict_read_) {
-      throw TProtocolException(
+      throw TProtocolException (
         TProtocolException::BAD_VERSION,
-        "No version identifier... old protocol client in strict mode?");
+        "No version identifier... old protocol client in strict mode? sz=" +
+          std::to_string(sz));
     } else {
       // Handle pre-versioned input
       int8_t type;
@@ -508,6 +523,16 @@ uint32_t BinaryProtocolReader::readBinary(std::unique_ptr<folly::IOBuf>& str) {
   int32_t size;
   result = readI32(size);
   checkStringSize(size);
+  in_.clone(str, size);
+  return result + (uint32_t)size;
+}
+
+uint32_t BinaryProtocolReader::readBinary(folly::IOBuf& str) {
+  uint32_t result;
+  int32_t size;
+  result = readI32(size);
+  checkStringSize(size);
+
   in_.clone(str, size);
   return result + (uint32_t)size;
 }

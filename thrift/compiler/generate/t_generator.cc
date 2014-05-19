@@ -1,20 +1,17 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include "thrift/compiler/generate/t_generator.h"
@@ -53,6 +50,10 @@ void t_generator::generate_program() {
 
   // Generate structs, exceptions, and unions in declared order
   vector<t_struct*> objects = program_->get_objects();
+  for (auto& object : objects) {
+    generate_forward_declaration(object);
+  }
+
   vector<t_struct*>::iterator o_iter;
   for (o_iter = objects.begin(); o_iter != objects.end(); ++o_iter) {
     if ((*o_iter)->is_xception()) {
@@ -151,7 +152,7 @@ t_generator* t_generator_registry::get_generator(t_program* program,
   gen_map_t::iterator iter = the_map.find(language);
 
   if (iter == the_map.end()) {
-    return NULL;
+    return nullptr;
   }
 
   return iter->second->get_generator(program, parsed_options, options);
@@ -210,7 +211,7 @@ std::string t_generator::generate_structural_id(
   SHA1(reinterpret_cast<const unsigned char*>(hashable_keys_list.data()),
        hashable_keys_list.size(),
        u.buf);
-  uint64_t h = folly::Endian::little(u.val);
+  uint64_t h = folly::Endian::little(u.val) & 0x7FFFFFFFFFFFFFFFull; // 63 bits
 
   // Generate a readable number.
   char structural_id[21];

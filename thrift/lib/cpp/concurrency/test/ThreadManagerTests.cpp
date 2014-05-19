@@ -28,6 +28,7 @@
 #include "thrift/lib/cpp/concurrency/PosixThreadFactory.h"
 #include "thrift/lib/cpp/concurrency/ThreadManager.h"
 #include "thrift/lib/cpp/concurrency/Util.h"
+#include "thrift/lib/cpp/concurrency/Codel.h"
 
 using namespace boost;
 using namespace apache::thrift::concurrency;
@@ -448,6 +449,24 @@ BOOST_AUTO_TEST_CASE(ExpireTest) {
   expireTest(numWorkers, expireTimeMs);
 }
 
+BOOST_AUTO_TEST_CASE(CodelTest) {
+  int64_t numTasks = 1000;
+  int64_t numWorkers = 2;
+  int64_t expireTimeMs = 5;
+  int64_t expectedDrops = 1;
+
+  apache::thrift::Codel c;
+  usleep(110000);
+  BOOST_CHECK_EQUAL(false, c.overloaded(std::chrono::milliseconds(100)));
+  usleep(90000);
+  BOOST_CHECK_EQUAL(true, c.overloaded(std::chrono::milliseconds(50)));
+  usleep(110000);
+  BOOST_CHECK_EQUAL(false, c.overloaded(std::chrono::milliseconds(2)));
+  usleep(90000);
+  BOOST_CHECK_EQUAL(false, c.overloaded(std::chrono::milliseconds(20)));
+}
+
+
 class AddRemoveTask : public Runnable,
                       public std::enable_shared_from_this<AddRemoveTask> {
  public:
@@ -642,6 +661,53 @@ BOOST_AUTO_TEST_CASE(OnlyStartedTest) {
     threadManager->threadFactory(threadFactory);
     threadManager->start();
   }
+}
+
+class TestObserver : public ThreadManager::Observer {
+ public:
+  TestObserver(int64_t timeout, const std::string& expectedName)
+    : timesCalled(0)
+    , timeout(timeout)
+    , expectedName(expectedName) {}
+
+  void addStats(const std::string& threadPoolName,
+                const SystemClockTimePoint& queueBegin,
+                const SystemClockTimePoint& workBegin,
+                const SystemClockTimePoint& workEnd) {
+    BOOST_CHECK_EQUAL(threadPoolName, expectedName);
+
+    // Note: Technically could fail if system clock changes.
+    BOOST_CHECK_GT((workBegin - queueBegin).count(), 0);
+    BOOST_CHECK_GT((workEnd - workBegin).count(), 0);
+    BOOST_CHECK_GT((workEnd - workBegin).count(), timeout - 1);
+    ++timesCalled;
+  }
+
+  uint64_t timesCalled;
+  int64_t timeout;
+  std::string expectedName;
+};
+
+BOOST_AUTO_TEST_CASE(ObserverTest) {
+  int64_t timeout = 1000;
+  auto observer = std::make_shared<TestObserver>(1000, "foo");
+  ThreadManager::setObserver(observer);
+
+  Monitor monitor;
+  size_t tasks = 1;
+
+  std::shared_ptr<ThreadManager> threadManager =
+      ThreadManager::newSimpleThreadManager(10);
+  threadManager->setNamePrefix("foo");
+  std::shared_ptr<PosixThreadFactory> threadFactory =
+    std::shared_ptr<PosixThreadFactory>(new PosixThreadFactory());
+  threadManager->threadFactory(threadFactory);
+  threadManager->start();
+
+  auto task = std::make_shared<LoadTask>(&monitor, &tasks, 1000);
+  threadManager->add(task);
+  threadManager->stop();
+  BOOST_CHECK_EQUAL(observer->timesCalled, 1);
 }
 
 ///////////////////////////////////////////////////////////////////////////

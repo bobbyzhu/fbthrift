@@ -34,8 +34,6 @@ class TAsyncTransport;
 
 namespace apache { namespace thrift {
 
-using apache::thrift::async::TDelayedDestruction;
-
 /**
  * MessageChannel defines an asynchronous API for message-based I/O.
  */
@@ -81,7 +79,7 @@ class MessageChannel :
    */
   virtual void setReceiveCallback(RecvCallback*) = 0;
 
-  apache::thrift::async::TAsyncTransport* getTransport() { return NULL;}
+  apache::thrift::async::TAsyncTransport* getTransport() { return nullptr;}
 };
 
 }} // apache::thrift

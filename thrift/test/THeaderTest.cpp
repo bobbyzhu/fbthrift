@@ -1,20 +1,17 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <boost/test/unit_test.hpp>
@@ -144,7 +141,7 @@ public:
     oprot_ = std::dynamic_pointer_cast<THeaderProtocol>
       (connectionContext->getOutputProtocol());
     // we don't need to return any context
-    return NULL;
+    return nullptr;
   }
 
   /**
@@ -152,7 +149,7 @@ public:
    * headers
    */
   void preWrite(void* ctx, const char* fn_name) {
-    if (iprot_.get() != NULL && oprot_.get() != NULL) {
+    if (iprot_.get() != nullptr && oprot_.get() != nullptr) {
       auto headers = iprot_->getHeaders();
       oprot_->getWriteHeaders() = headers;
       oprot_->setIdentity(testIdentity);
@@ -354,14 +351,14 @@ void* runServer(void*data) {
   std::shared_ptr<TServer> server(*(std::shared_ptr<TServer>*)data);
   server->serve();
 
-  return NULL;
+  return nullptr;
 }
 
 void runTestCase(ServerType sType, ClientType clientType) {
   std::bitset<CLIENT_TYPES_LEN> clientTypes;
   clientTypes[THRIFT_UNFRAMED_DEPRECATED] = 1;
   clientTypes[THRIFT_FRAMED_DEPRECATED] = 1;
-  clientTypes[THRIFT_HTTP_CLIENT_TYPE] = 1;
+  clientTypes[THRIFT_HTTP_SERVER_TYPE] = 1;
   clientTypes[THRIFT_HEADER_CLIENT_TYPE] = 1;
   clientTypes[THRIFT_FRAMED_COMPACT] = 1;
   THeaderProtocolFactory* factory = new THeaderProtocolFactory();
@@ -395,11 +392,13 @@ void runTestCase(ServerType sType, ClientType clientType) {
   std::shared_ptr<ServerCreatorBase> serverCreator;
   switch(sType) {
     case SERVER_TYPE_SIMPLE:
-      FBCODE_DISABLE_DEPRECATED_WARNING("Testing TSimpleServerCreator")
+      // "Testing TSimpleServerCreator"
+      #pragma GCC diagnostic push
+      #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
       serverCreator = std::shared_ptr<ServerCreatorBase>(new TSimpleServerCreator(
                                                       testProcessor, port,
                                                       false));
-      FBCODE_RESTORE_DEPRECATED_WARNING()
+      #pragma GCC diagnostic pop
       break;
     case SERVER_TYPE_THREADED:
       serverCreator = std::shared_ptr<ServerCreatorBase>(new TThreadedServerCreator(
@@ -407,10 +406,12 @@ void runTestCase(ServerType sType, ClientType clientType) {
                                                       false));
       break;
     case SERVER_TYPE_THREADPOOL:
-      FBCODE_DISABLE_DEPRECATED_WARNING("Testing TThreadPoolServerCreator")
+      // "Testing TThreadPoolServerCreator"
+      #pragma GCC diagnostic push
+      #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
       serverCreator = std::shared_ptr<ServerCreatorBase>(
         new TThreadPoolServerCreator(testProcessor, port, false));
-      FBCODE_RESTORE_DEPRECATED_WARNING()
+      #pragma GCC diagnostic pop
       break;
     case SERVER_TYPE_NONBLOCKING:
       serverCreator.reset(new TNonblockingServerCreator(testProcessor, port));
@@ -546,5 +547,5 @@ boost::unit_test::test_suite* init_unit_test_suite(int argc, char* argv[]) {
     exit(1);
   }
 
-  return NULL;
+  return nullptr;
 }

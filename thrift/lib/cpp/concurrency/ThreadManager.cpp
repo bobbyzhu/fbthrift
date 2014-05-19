@@ -23,6 +23,7 @@
 #include "thrift/lib/cpp/concurrency/Thread.h"
 #include "thrift/lib/cpp/concurrency/Util.h"
 #include "thrift/lib/cpp/concurrency/PosixThreadFactory.h"
+#include "thrift/lib/cpp/concurrency/Codel.h"
 #include "folly/Conv.h"
 #include "ThreadManager.h"
 #include "PosixThreadFactory.h"
@@ -40,6 +41,8 @@
 #include <iostream>
 #endif //defined(DEBUG)
 
+DEFINE_bool(codel_enabled, false, "Enable codel queue timeout algorithm");
+
 namespace apache { namespace thrift { namespace concurrency {
 
 using std::shared_ptr;
@@ -48,10 +51,18 @@ using std::dynamic_pointer_cast;
 using std::unique_ptr;
 using apache::thrift::async::RequestContext;
 
+folly::RWSpinLock ThreadManager::observerLock_;
+std::shared_ptr<ThreadManager::Observer> ThreadManager::observer_;
+
 shared_ptr<ThreadManager> ThreadManager::newThreadManager() {
   return make_shared<ThreadManager::Impl>();
 }
 
-
-
+void ThreadManager::setObserver(
+    std::shared_ptr<ThreadManager::Observer> observer) {
+  {
+    folly::RWSpinLock::WriteHolder g(observerLock_);
+    observer_.swap(observer);
+  }
+}
 }}} // apache::thrift::concurrency

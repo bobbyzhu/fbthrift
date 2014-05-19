@@ -61,7 +61,7 @@ namespace apache { namespace thrift { namespace async {
  * a consistent rate of ticks.
  */
 class HHWheelTimer : protected apache::thrift::async::TAsyncTimeout,
-      virtual public apache::thrift::async::TDelayedDestruction {
+                     public apache::thrift::async::TDelayedDestruction {
  public:
   typedef std::unique_ptr<HHWheelTimer, Destructor> UniquePtr;
 
@@ -192,6 +192,9 @@ class HHWheelTimer : protected apache::thrift::async::TAsyncTimeout,
   void setCatchupEveryN(uint32_t everyN) {
     catchupEveryN_ = everyN;
   }
+
+  using apache::thrift::async::TAsyncTimeout::attachEventBase;
+  using apache::thrift::async::TAsyncTimeout::detachEventBase;
 
  protected:
   /**

@@ -33,8 +33,6 @@
 #include <memory>
 #include <unordered_set>
 
-using apache::thrift::TApplicationException;
-
 namespace apache { namespace thrift {
 /**
  * Represents a connection that is handled via libevent. This connection
@@ -128,6 +126,11 @@ class Cpp2Connection
 
     Cpp2RequestContext* getContext() {
       return &reqContext_;
+    }
+
+    virtual apache::thrift::server::TServerObserver::CallTimestamps&
+    getTimestamps() {
+      return req_->getTimestamps();
     }
 
    private:

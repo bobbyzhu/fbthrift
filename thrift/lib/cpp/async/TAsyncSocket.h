@@ -1,21 +1,19 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
+
 #ifndef THRIFT_ASYNC_TASYNCSOCKET_H_
 #define THRIFT_ASYNC_TASYNCSOCKET_H_ 1
 
@@ -23,7 +21,6 @@
 #include <sys/socket.h>
 #include <glog/logging.h>
 #include "thrift/lib/cpp/ShutdownSocketSet.h"
-#include "glog/logging.h"
 #include "thrift/lib/cpp/transport/TSocketAddress.h"
 #include "thrift/lib/cpp/async/TAsyncTimeout.h"
 #include "thrift/lib/cpp/async/TAsyncTransport.h"
@@ -190,14 +187,14 @@ class TAsyncSocket : public TAsyncTransport {
   /**
    * Get the TEventBase used by this socket.
    */
-  virtual TEventBase* getEventBase() const {
+  TEventBase* getEventBase() const override {
     return eventBase_;
   }
 
   /**
    * Get the file descriptor used by the TAsyncSocket.
    */
-  int getFd() const {
+  virtual int getFd() const {
     return fd_;
   }
 
@@ -211,7 +208,7 @@ class TAsyncSocket : public TAsyncTransport {
    * Returns the file descriptor.  The caller assumes ownership of the
    * descriptor, and it will not be closed when the TAsyncSocket is destroyed.
    */
-  int detachFd();
+  virtual int detachFd();
 
   /**
    * Uniquely identifies a handle to a socket option value. Each
@@ -274,7 +271,7 @@ class TAsyncSocket : public TAsyncTransport {
    * @param milliseconds  The timeout duration, in milliseconds.  If 0, no
    *                      timeout will be used.
    */
-  void setSendTimeout(uint32_t milliseconds);
+  void setSendTimeout(uint32_t milliseconds) override;
 
   /**
    * Get the send timeout.
@@ -282,7 +279,7 @@ class TAsyncSocket : public TAsyncTransport {
    * @return Returns the current send timeout, in milliseconds.  A return value
    *         of 0 indicates that no timeout is set.
    */
-  uint32_t getSendTimeout() const {
+  uint32_t getSendTimeout() const override {
     return sendTimeout_;
   }
 
@@ -314,47 +311,58 @@ class TAsyncSocket : public TAsyncTransport {
 
   // Methods inherited from TAsyncTransport
   // See the documentation in TAsyncTransport.h
-  virtual void setReadCallback(ReadCallback* callback);
-  virtual ReadCallback* getReadCallback() const;
+  void setReadCallback(ReadCallback* callback) override;
+  ReadCallback* getReadCallback() const override;
 
-  virtual void write(WriteCallback* callback, const void* buf, size_t bytes);
-  virtual void writev(WriteCallback* callback, const iovec* vec, size_t count);
-  virtual void writeChain(WriteCallback* callback,
-                          std::unique_ptr<folly::IOBuf>&& buf,
-                          WriteFlags flags = WriteFlags::NONE);
-  virtual void write(WriteCallback* callback, const void* buf, size_t bytes,
-                     WriteFlags flags);
-  virtual void writev(WriteCallback* callback, const iovec* vec, size_t count,
-                      WriteFlags flags);
+  void write(WriteCallback* callback, const void* buf, size_t bytes,
+             WriteFlags flags = WriteFlags::NONE) override;
+  void writev(WriteCallback* callback, const iovec* vec, size_t count,
+              WriteFlags flags = WriteFlags::NONE) override;
+  void writeChain(WriteCallback* callback,
+                  std::unique_ptr<folly::IOBuf>&& buf,
+                  WriteFlags flags = WriteFlags::NONE) override;
 
-  virtual void close();
-  virtual void closeNow();
-  virtual void closeWithReset();
-  virtual void shutdownWrite();
-  virtual void shutdownWriteNow();
+  void close() override;
+  void closeNow() override;
+  void closeWithReset() override;
+  void shutdownWrite() override;
+  void shutdownWriteNow() override;
 
-  virtual bool readable() const;
+  bool readable() const override;
   virtual bool isPending();
   virtual bool hangup() const;
-  virtual bool good() const;
-  virtual bool error() const;
-  virtual void attachEventBase(TEventBase* eventBase);
-  virtual void detachEventBase();
-  virtual bool isDetachable() const;
+  bool good() const override;
+  bool error() const override;
+  void attachEventBase(TEventBase* eventBase) override;
+  void detachEventBase() override;
+  bool isDetachable() const override;
 
-  virtual void getLocalAddress(transport::TSocketAddress* address) const;
-  virtual void getPeerAddress(transport::TSocketAddress* address) const;
+  void getLocalAddress(
+    transport::TSocketAddress* address) const override;
+  void getPeerAddress(
+    transport::TSocketAddress* address) const override;
 
-  virtual void setEorTracking(bool track) {};
+  void setEorTracking(bool track) override {}
 
-  virtual bool connecting() const {
+  bool connecting() const override {
     return (state_ == StateEnum::CONNECTING);
   }
 
-  virtual size_t getAppBytesWritten() const { return appBytesWritten_; }
-  virtual size_t getRawBytesWritten() const { return getAppBytesWritten(); }
-  virtual size_t getAppBytesReceived() const { return appBytesReceived_; }
-  virtual size_t getRawBytesReceived() const { return getAppBytesReceived(); }
+  size_t getAppBytesWritten() const override {
+    return appBytesWritten_;
+  }
+
+  size_t getRawBytesWritten() const override {
+    return getAppBytesWritten();
+  }
+
+  size_t getAppBytesReceived() const override {
+    return appBytesReceived_;
+  }
+
+  size_t getRawBytesReceived() const override {
+    return getAppBytesReceived();
+  }
 
   // Methods controlling socket options
 
@@ -625,6 +633,8 @@ class TAsyncSocket : public TAsyncTransport {
   void invalidState(ConnectCallback* callback);
   void invalidState(ReadCallback* callback);
   void invalidState(WriteCallback* callback);
+
+  std::string withAddr(const std::string& s);
 
   StateEnum state_;                     ///< StateEnum describing current state
   uint8_t shutdownFlags_;               ///< Shutdown state (ShutdownFlags)

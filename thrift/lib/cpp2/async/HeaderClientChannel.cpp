@@ -1,20 +1,17 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include "thrift/lib/cpp2/async/HeaderClientChannel.h"
@@ -40,14 +37,14 @@ namespace apache { namespace thrift {
 HeaderClientChannel::HeaderClientChannel(
   const std::shared_ptr<TAsyncTransport>& transport)
     : Cpp2Channel(transport)
-    , HHWheelTimer(getEventBase())
     , sendSeqId_(0)
-    , saslClient_(new GssSaslClient(transport->getEventBase()))
     , closeCallback_(nullptr)
     , timeout_(0)
     , timeoutSASL_(500)
     , handshakeMessagesSent_(0)
-    , keepRegisteredForClose_(true) {
+    , keepRegisteredForClose_(true)
+    , timer_(new apache::thrift::async::HHWheelTimer(getEventBase()))
+    , saslClientCallback_(*this) {
   header_.reset(new THeader);
   header_->setSupportedClients(nullptr);
   header_->setFlags(HEADER_FLAG_SUPPORT_OUT_OF_ORDER);
@@ -63,22 +60,27 @@ void HeaderClientChannel::setSaslTimeout(uint32_t ms) {
 }
 
 void HeaderClientChannel::destroy() {
-  saslClient_->markChannelCallbackUnavailable();
+  saslClientCallback_.cancelTimeout();
+  if (saslClient_) {
+    saslClient_->markChannelCallbackUnavailable();
+  }
   Cpp2Channel::destroy();
 }
 
 void HeaderClientChannel::attachEventBase(
     TEventBase* eventBase) {
   Cpp2Channel::attachEventBase(eventBase);
-  HHWheelTimer::attachEventBase(eventBase);
+  timer_->attachEventBase(eventBase);
 }
 
 void HeaderClientChannel::detachEventBase() {
-  saslClient_->markChannelCallbackUnavailable();
-  apache::thrift::async::HHWheelTimer::Callback::cancelTimeout();
+  saslClientCallback_.cancelTimeout();
+  if (saslClient_) {
+    saslClient_->markChannelCallbackUnavailable();
+  }
 
   Cpp2Channel::detachEventBase();
-  HHWheelTimer::detachEventBase();
+  timer_->detachEventBase();
 }
 
 void HeaderClientChannel::startSecurity() {
@@ -94,22 +96,27 @@ void HeaderClientChannel::startSecurity() {
     return;
   }
 
+  if (!saslClient_) {
+    throw TTransportException("Security requested, but SASL client not set");
+  }
+
   // Let's get this party started.
   protectionState_ = ProtectionState::INPROGRESS;
   setBaseReceivedCallback();
   // Schedule timeout because in saslClient_->start() we may be talking
   // to the KDC.
   if (timeoutSASL_ > 0) {
-    scheduleTimeout(this, std::chrono::milliseconds(timeoutSASL_));
+    timer_->scheduleTimeout(&saslClientCallback_,
+                            std::chrono::milliseconds(timeoutSASL_));
   }
-  saslClient_->start(this);
+  saslClient_->start(&saslClientCallback_);
 }
 
 unique_ptr<IOBuf> HeaderClientChannel::handleSecurityMessage(
-  unique_ptr<IOBuf>&& buf) {
+    unique_ptr<IOBuf>&& buf) {
   if (header_->getClientType() == THRIFT_HEADER_SASL_CLIENT_TYPE) {
     if (protectionState_ == ProtectionState::INPROGRESS) {
-      saslClient_->consumeFromServer(this, std::move(buf));
+      saslClient_->consumeFromServer(&saslClientCallback_, std::move(buf));
       return nullptr;
     }
     // else, fall through to application message processing
@@ -122,23 +129,25 @@ unique_ptr<IOBuf> HeaderClientChannel::handleSecurityMessage(
     // very broken.  Fail hard.
     LOG(WARNING) << "non-SASL message received on SASL channel";
     TTransportException ex("non-SASL message received on SASL channel");
-    saslError(make_exception_ptr(ex));
+    saslClientCallback_.saslError(make_exception_ptr(ex));
     return nullptr;
   }
 
   return std::move(buf);
 }
 
-void HeaderClientChannel::saslSendServer(
-  std::unique_ptr<folly::IOBuf>&& message) {
-  if (timeoutSASL_ > 0) {
-    scheduleTimeout(this, std::chrono::milliseconds(timeoutSASL_));
+void HeaderClientChannel::SaslClientCallback::saslSendServer(
+    std::unique_ptr<folly::IOBuf>&& message) {
+  if (channel_.timeoutSASL_ > 0) {
+    channel_.timer_->scheduleTimeout(this,
+        std::chrono::milliseconds(channel_.timeoutSASL_));
   }
-  handshakeMessagesSent_++;
-  sendMessage(nullptr, std::move(message));
+  channel_.handshakeMessagesSent_++;
+  channel_.sendMessage(nullptr, std::move(message));
 }
 
-void HeaderClientChannel::saslError(std::exception_ptr&& ex) {
+void HeaderClientChannel::SaslClientCallback::saslError(
+    std::exception_ptr&& ex) {
   apache::thrift::async::HHWheelTimer::Callback::cancelTimeout();
 
   // Record error string
@@ -146,19 +155,19 @@ void HeaderClientChannel::saslError(std::exception_ptr&& ex) {
     std::rethrow_exception(ex);
   } catch (const std::exception& e) {
     std::string errorMessage =
-      "MsgNum: " + std::to_string(handshakeMessagesSent_);
-    saslClient_->setErrorString(errorMessage + " " + e.what());
+      "MsgNum: " + std::to_string(channel_.handshakeMessagesSent_);
+    channel_.saslClient_->setErrorString(errorMessage + " " + e.what());
   } catch (...) {
   }
 
   try {
     // Fall back to insecure.  This will throw an exception if the
     // insecure client type is not supported.
-    header_->setClientType(THRIFT_HEADER_CLIENT_TYPE);
+    channel_.header_->setClientType(THRIFT_HEADER_CLIENT_TYPE);
   } catch (const std::exception& e) {
     LOG(ERROR) << "SASL required by client but failed or rejected by server";
-    messageReceiveError(std::move(ex));
-    closeNow();
+    channel_.messageReceiveError(std::move(ex));
+    channel_.closeNow();
     return;
   }
 
@@ -171,16 +180,16 @@ void HeaderClientChannel::saslError(std::exception_ptr&& ex) {
   }
   // We need to tell saslClient that the security channel is no longer
   // available, so that it does not attempt to send messages to the server.
-  saslClient_->markChannelCallbackUnavailable();
-  setSecurityComplete(ProtectionState::NONE);
+  channel_.saslClient_->markChannelCallbackUnavailable();
+  channel_.setSecurityComplete(ProtectionState::NONE);
 }
 
-void HeaderClientChannel::saslComplete() {
+void HeaderClientChannel::SaslClientCallback::saslComplete() {
   apache::thrift::async::HHWheelTimer::Callback::cancelTimeout();
   VLOG(5) << "SASL client negotiation complete: "
-          << saslClient_->getClientIdentity() << " => "
-          << saslClient_->getServerIdentity();
-  setSecurityComplete(ProtectionState::VALID);
+          << channel_.saslClient_->getClientIdentity() << " => "
+          << channel_.saslClient_->getServerIdentity();
+  channel_.setSecurityComplete(ProtectionState::VALID);
 }
 
 bool HeaderClientChannel::isSecurityPending() {
@@ -337,9 +346,10 @@ void HeaderClientChannel::sendRequest(
                                  std::move(ctx));
 
   if (timeout > std::chrono::milliseconds(0)) {
-    scheduleTimeout(twcb, timeout);
+    timer_->scheduleTimeout(twcb, timeout);
   }
   maybeSetPriorityHeader(rpcOptions);
+  maybeSetTimeoutHeader(rpcOptions);
 
   if (header_->getClientType() != THRIFT_HEADER_CLIENT_TYPE &&
       header_->getClientType() != THRIFT_HEADER_SASL_CLIENT_TYPE) {
@@ -639,7 +649,7 @@ void HeaderClientChannel::StreamCallback::onOutOfLoopStreamError(
 void HeaderClientChannel::StreamCallback::resetTimeout() {
   cancelTimeout();
   if (timeout_ > std::chrono::milliseconds(0)) {
-    channel_->scheduleTimeout(this, timeout_);
+    channel_->timer_->scheduleTimeout(this, timeout_);
   }
 }
 

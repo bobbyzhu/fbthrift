@@ -1,21 +1,19 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
+
 #include <gtest/gtest.h>
 
 #include "thrift/lib/cpp2/async/MessageChannel.h"
@@ -241,7 +239,7 @@ class MessageTest : public SocketPairTest<Cpp2Channel, Cpp2Channel>
   virtual void messageReceived(unique_ptr<IOBuf>&& buf,
                                unique_ptr<sample> sample) {
     MessageCallback::messageReceived(std::move(buf), std::move(sample));
-    channel1_->setReceiveCallback(NULL);
+    channel1_->setReceiveCallback(nullptr);
   }
 
 
@@ -277,7 +275,7 @@ public:
 
   virtual void messageChannelEOF() {
     MessageCallback::messageChannelEOF();
-    channel1_->setReceiveCallback(NULL);
+    channel1_->setReceiveCallback(nullptr);
   }
 
  private:
@@ -303,7 +301,7 @@ public:
     : c_(c) {}
     void replyReceived(ClientReceiveState&& state) {
       TestRequestCallback::replyReceived(std::move(state));
-      c_->channel1_->setCallback(NULL);
+      c_->channel1_->setCallback(nullptr);
     }
    private:
     HeaderChannelTest* c_;
@@ -335,7 +333,7 @@ public:
     EXPECT_EQ(request_, 2);
     EXPECT_EQ(requestBytes_, len_*2);
     EXPECT_EQ(oneway_, 1);
-    channel1_->setCallback(NULL);
+    channel1_->setCallback(nullptr);
   }
 
  private:
@@ -390,7 +388,7 @@ public:
         c_->channel0_->setCloseCallback(nullptr);
       }
       if (!c_->serverClosed_) {
-        c_->channel1_->setCallback(NULL);
+        c_->channel1_->setCallback(nullptr);
       }
     }
     // Leave requestError() alone.  If the request fails, don't
@@ -411,7 +409,7 @@ public:
   virtual void channelClosed(std::exception_ptr&& ep) {
     EXPECT_EQ(channel1_->getSaslPeerIdentity(), "");
     ResponseCallback::channelClosed(std::move(ep));
-    channel1_->setCallback(NULL);
+    channel1_->setCallback(nullptr);
   }
 
   void preLoop() {
@@ -546,7 +544,7 @@ class InOrderTest
     : c_(c) {}
     void replyReceived(ClientReceiveState&& state) {
       if (reply_ == 1) {
-        c_->channel1_->setCallback(NULL);
+        c_->channel1_->setCallback(nullptr);
         // Verify that they came back in the same order
         EXPECT_EQ(state.buf()->computeChainDataLength(), c_->len_ + 1);
       }
@@ -619,7 +617,7 @@ public:
     : c_(c) {}
 
     void requestError(ClientReceiveState&& state) {
-      c_->channel1_->setCallback(NULL);
+      c_->channel1_->setCallback(nullptr);
       TestRequestCallback::requestError(std::move(state));
     }
 
@@ -718,8 +716,8 @@ public:
     EXPECT_EQ(request_, 2);
     EXPECT_EQ(requestBytes_, len_ * 2);
     EXPECT_EQ(oneway_, 0);
-    channel0_->setCloseCallback(NULL);
-    channel1_->setCallback(NULL);
+    channel0_->setCloseCallback(nullptr);
+    channel1_->setCallback(nullptr);
   }
 
   void requestReceived(unique_ptr<ResponseChannel::Request>&& req) {
@@ -729,8 +727,8 @@ public:
     // TestRequestCallback::replyReceived(std::move(buf));
     channel1_->getEventBase()->runAfterDelay(
       [&](){
-        channel1_->setCallback(NULL);
-        channel0_->setCloseCallback(NULL);
+        channel1_->setCallback(nullptr);
+        channel0_->setCloseCallback(nullptr);
       },
       timeout_ * 2); // enough time for server socket to close also
   }
@@ -799,7 +797,7 @@ public:
       requestBytes_ += req->getBuf()->computeChainDataLength();
     } else {
       ResponseCallback::requestReceived(std::move(req));
-      channel1_->setCallback(NULL);
+      channel1_->setCallback(nullptr);
     }
   }
 
@@ -817,8 +815,7 @@ class ClientCloseTest
     , public ResponseCallback {
 public:
   explicit ClientCloseTest(bool halfClose)
-      : halfClose_(halfClose)
-      , len_(1) {
+      : halfClose_(halfClose) {
   }
 
   void preLoop() {
@@ -838,12 +835,12 @@ public:
     }
     channel1_->getEventBase()->runAfterDelay(
       [&](){
-        channel1_->setCallback(NULL);
+        channel1_->setCallback(nullptr);
       },
     20);
     channel0_->getEventBase()->runAfterDelay(
       [&](){
-        channel0_->setCloseCallback(NULL);
+        channel0_->setCloseCallback(nullptr);
       },
     20);
   }
@@ -861,7 +858,6 @@ public:
 
  private:
   bool halfClose_;
-  size_t len_;
 };
 
 TEST(Channel, ClientCloseTest) {
@@ -875,8 +871,7 @@ class ServerCloseTest
     , public ResponseCallback {
 public:
   explicit ServerCloseTest(bool halfClose)
-      : halfClose_(halfClose)
-      , len_(1) {
+      : halfClose_(halfClose) {
   }
 
   void preLoop() {
@@ -896,12 +891,12 @@ public:
     }
     channel1_->getEventBase()->runAfterDelay(
       [&](){
-        channel1_->setCallback(NULL);
+        channel1_->setCallback(nullptr);
       },
     20);
     channel0_->getEventBase()->runAfterDelay(
       [&](){
-        channel0_->setCloseCallback(NULL);
+        channel0_->setCloseCallback(nullptr);
       },
     20);
   }
@@ -919,7 +914,6 @@ public:
 
  private:
   bool halfClose_;
-  size_t len_;
 };
 
 TEST(Channel, ServerCloseTest) {
@@ -933,8 +927,8 @@ class DestroyAsyncTransport : public apache::thrift::async::TAsyncTransport {
   DestroyAsyncTransport() : cb_(nullptr) { }
   void setReadCallback(ReadCallback* callback) { cb_ = callback; }
   ReadCallback* getReadCallback() const { return cb_; }
-  void write(WriteCallback* c, const void* v, size_t s) { }
-  void writev(WriteCallback* c, const iovec* v, size_t s) { }
+  void write(WriteCallback* c, const void* v, size_t s, WriteFlags flags) { }
+  void writev(WriteCallback* c, const iovec* v, size_t s, WriteFlags flags) { }
   void writeChain(WriteCallback* c,
                   std::unique_ptr<folly::IOBuf>&& i,
                   WriteFlags flags) { }

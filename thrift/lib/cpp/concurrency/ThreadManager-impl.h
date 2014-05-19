@@ -19,6 +19,8 @@
 #ifndef THREADMANAGERIMPL_H
 #define THREADMANAGERIMPL_H
 
+#include "folly/SmallLocks.h"
+
 namespace apache { namespace thrift { namespace concurrency {
 
 using std::shared_ptr;
@@ -28,7 +30,6 @@ using std::unique_ptr;
 using apache::thrift::async::RequestContext;
 
 class ThreadManager::Task {
-
  public:
   enum STATE {
     WAITING,
@@ -38,22 +39,12 @@ class ThreadManager::Task {
   };
 
   Task(shared_ptr<Runnable> runnable,
-       int64_t expirationMs = 0,
-       bool enableStats = false)
-    : runnable_(runnable),
-      expireTimeUs_(0),
-      entryTimeUs_(0),
-      context_(RequestContext::saveContext()) {
-    if (enableStats || expirationMs > 0) {
-      int64_t nowUs(Util::currentTimeUsec());
-      if (enableStats) {
-        entryTimeUs_ = nowUs;
-      }
-      if (expirationMs > 0) {
-        expireTimeUs_ = nowUs + (expirationMs * Util::US_PER_MS);
-      }
-    }
-  }
+       const std::chrono::milliseconds& expiration)
+    : runnable_(std::move(runnable))
+    , queueBeginTime_(SystemClock::now())
+    , expireTime_(expiration > std::chrono::milliseconds::zero() ?
+                  queueBeginTime_ + expiration : SystemClockTimePoint())
+    , context_(RequestContext::saveContext()) {}
 
   ~Task() {}
 
@@ -68,18 +59,26 @@ class ThreadManager::Task {
     return runnable_;
   }
 
-  int64_t getExpireTime() const {
-    return expireTimeUs_;
+  SystemClockTimePoint getExpireTime() const {
+    return expireTime_;
   }
 
-  int64_t getEntryTime() const {
-    return entryTimeUs_;
+  SystemClockTimePoint getQueueBeginTime() const {
+    return queueBeginTime_;
+  }
+
+  bool canExpire() const {
+    return expireTime_ != SystemClockTimePoint();
+  }
+
+  bool statsEnabled() const {
+    return queueBeginTime_ != SystemClockTimePoint();
   }
 
  private:
   shared_ptr<Runnable> runnable_;
-  int64_t expireTimeUs_;
-  int64_t entryTimeUs_;
+  SystemClockTimePoint queueBeginTime_;
+  SystemClockTimePoint expireTime_;
   std::shared_ptr<RequestContext> context_;
 };
 
@@ -101,6 +100,7 @@ class ThreadManager::ImplT : public ThreadManager  {
     expiredCount_(0),
     workersToStop_(0),
     enableTaskStats_(enableTaskStats),
+    statsLock_{0},
     waitingTimeUs_(0),
     executingTimeUs_(0),
     numTasks_(0),
@@ -113,7 +113,8 @@ class ThreadManager::ImplT : public ThreadManager  {
     deadWorkerMonitor_(&mutex_),
     deadWorkers_(),
     namePrefix_(""),
-    namePrefixCounter_(0) {
+    namePrefixCounter_(0),
+    codelEnabled_(false || FLAGS_codel_enabled) {
       RequestContext::getStaticContext();
   }
 
@@ -137,6 +138,11 @@ class ThreadManager::ImplT : public ThreadManager  {
   void threadFactory(shared_ptr<ThreadFactory> value) {
     Guard g(mutex_);
     threadFactory_ = value;
+  }
+
+  std::string getNamePrefix() const override {
+    Guard g(mutex_);
+    return namePrefix_;
   }
 
   void setNamePrefix(const std::string& name) {
@@ -184,18 +190,24 @@ class ThreadManager::ImplT : public ThreadManager  {
   shared_ptr<Runnable> removeNextPending();
 
   void setExpireCallback(ExpireCallback expireCallback);
+  void setCodelCallback(ExpireCallback expireCallback);
   void setThreadInitCallback(InitCallback initCallback) {
     initCallback_ = initCallback;
   }
 
   void getStats(int64_t& waitTimeUs, int64_t& runTimeUs, int64_t maxItems);
+  void enableCodel(bool);
 
   // Methods to be invoked by workers
   void workerStarted(Worker<SemType>* worker);
   void workerExiting(Worker<SemType>* worker);
-  void reportTaskStats(int64_t waitTimeUs, int64_t runTimeUs);
+  void reportTaskStats(const SystemClockTimePoint& queueBegin,
+                       const SystemClockTimePoint& workBegin,
+                       const SystemClockTimePoint& workEnd);
   Task* waitOnTask();
   void taskExpired(Task* task);
+
+  Codel codel_;
 
  private:
   void stopImpl(bool joinArg);
@@ -216,11 +228,13 @@ class ThreadManager::ImplT : public ThreadManager  {
   std::atomic<int> workersToStop_;
 
   const bool enableTaskStats_;
+  folly::MicroSpinLock statsLock_;
   int64_t waitingTimeUs_;
   int64_t executingTimeUs_;
   int64_t numTasks_;
 
   ExpireCallback expireCallback_;
+  ExpireCallback codelCallback_;
   InitCallback initCallback_;
 
   ThreadManager::STATE state_;
@@ -247,6 +261,8 @@ class ThreadManager::ImplT : public ThreadManager  {
   std::map<const Thread::id_t, shared_ptr<Thread> > idMap_;
   std::string namePrefix_;
   uint32_t namePrefixCounter_;
+
+  bool codelEnabled_;
 
   class NotificationWorker;
 };

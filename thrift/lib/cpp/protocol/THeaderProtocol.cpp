@@ -29,6 +29,8 @@
 #include <boost/static_assert.hpp>
 
 
+using apache::thrift::transport::THeaderTransport;
+
 namespace apache { namespace thrift { namespace protocol {
 
 void THeaderProtocol::resetProtocol() {
@@ -155,10 +157,6 @@ uint32_t THeaderProtocol::writeFloat(const float flt) {
   return proto_->writeFloat(flt);
 }
 
-uint32_t THeaderProtocol::writeBinary(const std::string& str) {
-  return proto_->writeBinary(str);
-}
-
 /**
  * Reading functions
  */
@@ -258,10 +256,6 @@ uint32_t THeaderProtocol::readDouble(double& dub) {
 
 uint32_t THeaderProtocol::readFloat(float& flt) {
   return proto_->readFloat(flt);
-}
-
-uint32_t THeaderProtocol::readBinary(std::string& binary) {
-  return proto_->readBinary(binary);
 }
 
 }}} // apache::thrift::protocol

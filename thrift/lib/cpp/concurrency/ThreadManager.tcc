@@ -22,13 +22,14 @@
 #include "thrift/lib/cpp/concurrency/Exception.h"
 #include "thrift/lib/cpp/concurrency/Monitor.h"
 #include "thrift/lib/cpp/concurrency/Thread.h"
-#include "thrift/lib/cpp/concurrency/Util.h"
 #include "thrift/lib/cpp/concurrency/PosixThreadFactory.h"
+#include "thrift/lib/cpp/concurrency/Codel.h"
 #include "folly/Conv.h"
 #include "ThreadManager.h"
 #include "PosixThreadFactory.h"
 #include "folly/MPMCQueue.h"
 #include "thrift/lib/cpp/async/Request.h"
+#include "folly/Logging.h"
 
 #include <memory>
 
@@ -93,14 +94,31 @@ class ThreadManager::ImplT<SemType>::Worker : public Runnable {
 
       // Getting the current time is moderately expensive,
       // so only get the time if we actually need it.
-      int64_t startTimeUs = 0;
-      if (task->getExpireTime() || task->getEntryTime()) {
-        startTimeUs = Util::currentTimeUsec();
+      SystemClockTimePoint startTime;
+      if (task->canExpire() || task->statsEnabled()) {
+        startTime = SystemClock::now();
+
+        // Codel auto-expire time algorithm
+        int64_t delay = std::chrono::duration_cast<std::chrono::milliseconds>(
+          startTime - task->getQueueBeginTime()).count();
+
+        if (manager_->codel_.overloaded(std::chrono::microseconds(delay))) {
+          if (manager_->codelCallback_) {
+            manager_->codelCallback_(task->getRunnable());
+          }
+          if (manager_->codelEnabled_) {
+            FB_LOG_EVERY_MS(WARNING, 10000) << "Queueing delay timeout";
+
+            manager_->taskExpired(task);
+            delete task;
+            continue;
+          }
+        }
       }
 
       // Check if the task is expired
-      if (task->getExpireTime() != 0 &&
-          task->getExpireTime() <= startTimeUs) {
+      if (task->canExpire() &&
+          task->getExpireTime() <= startTime) {
         manager_->taskExpired(task);
         delete task;
         continue;
@@ -116,10 +134,11 @@ class ThreadManager::ImplT<SemType>::Worker : public Runnable {
                 "non-exception object");
       }
 
-      if (task->getEntryTime() != 0) {
-        int64_t endTimeUs = Util::currentTimeUsec();
-        manager_->reportTaskStats(startTimeUs - task->getEntryTime(),
-                                  endTimeUs - startTimeUs);
+      if (task->statsEnabled()) {
+        auto endTime = SystemClock::now();
+        manager_->reportTaskStats(task->getQueueBeginTime(),
+                                  startTime,
+                                  endTime);
       }
       delete task;
     }
@@ -368,7 +387,8 @@ void ThreadManager::ImplT<SemType>::add(shared_ptr<Runnable> value,
 
   // If an idle thread is available notify it, otherwise all worker threads are
   // running and will get around to this task in time.
-  Task* task = new ThreadManager::Task(value, expiration, enableTaskStats_);
+  Task* task = new ThreadManager::Task(std::move(value),
+                                       std::chrono::milliseconds{expiration});
   if (!tasks_.write(task)) {
     T_ERROR("ThreadManager: Failed to enqueue item. Increase maxQueueLen?");
     delete task;
@@ -506,9 +526,14 @@ void ThreadManager::ImplT<SemType>::setExpireCallback(ExpireCallback expireCallb
 }
 
 template <typename SemType>
+void ThreadManager::ImplT<SemType>::setCodelCallback(ExpireCallback expireCallback) {
+  codelCallback_ = expireCallback;
+}
+
+template <typename SemType>
 void ThreadManager::ImplT<SemType>::getStats(int64_t& waitTimeUs, int64_t& runTimeUs,
                                    int64_t maxItems) {
-  Guard g(mutex_);
+  folly::MSLGuard g(statsLock_);
   if (numTasks_) {
     if (numTasks_ >= maxItems) {
       waitingTimeUs_ /= numTasks_;
@@ -524,12 +549,40 @@ void ThreadManager::ImplT<SemType>::getStats(int64_t& waitTimeUs, int64_t& runTi
 }
 
 template <typename SemType>
-void ThreadManager::ImplT<SemType>::reportTaskStats(int64_t waitTimeUs,
-                                          int64_t runTimeUs) {
-  Guard g(mutex_);
-  waitingTimeUs_ += waitTimeUs;
-  executingTimeUs_ += runTimeUs;
-  ++numTasks_;
+void ThreadManager::ImplT<SemType>::reportTaskStats(
+    const SystemClockTimePoint& queueBegin,
+    const SystemClockTimePoint& workBegin,
+    const SystemClockTimePoint& workEnd) {
+  int64_t waitTimeUs = std::chrono::duration_cast<std::chrono::microseconds>(
+      workBegin - queueBegin).count();
+  int64_t runTimeUs = std::chrono::duration_cast<std::chrono::microseconds>(
+      workEnd - workBegin).count();
+  if (enableTaskStats_) {
+    folly::MSLGuard g(statsLock_);
+    waitingTimeUs_ += waitTimeUs;
+    executingTimeUs_ += runTimeUs;
+    ++numTasks_;
+  }
+
+  // Optimistic check lock free
+  if (ThreadManager::ImplT<SemType>::observer_) {
+    // Hold lock to ensure that observer_ does not get deleted.
+    folly::RWSpinLock::ReadHolder g(ThreadManager::ImplT<SemType>::observerLock_);
+    if (ThreadManager::ImplT<SemType>::observer_) {
+      // Note: We are assuming the namePrefix_ does not change after the thread is
+      // started.
+      // TODO: enforce this.
+      ThreadManager::ImplT<SemType>::observer_->addStats(namePrefix_,
+                                                         queueBegin,
+                                                         workBegin,
+                                                         workEnd);
+    }
+  }
+}
+
+template <typename SemType>
+void ThreadManager::ImplT<SemType>::enableCodel(bool enabled) {
+  codelEnabled_ = enabled || FLAGS_codel_enabled;
 }
 
 template <typename SemType>
@@ -605,6 +658,10 @@ public:
     for (auto& m : managers_) {
       m->join();
     }
+  }
+
+  std::string getNamePrefix() const override {
+    return managers_[0]->getNamePrefix();
   }
 
   void setNamePrefix(const std::string& name) {
@@ -721,11 +778,25 @@ public:
   }
 
   virtual void setExpireCallback(ExpireCallback expireCallback) {
-    throw IllegalStateException("Not implemented");
+    for (const auto& m : managers_) {
+      m->setExpireCallback(expireCallback);
+    }
+  }
+
+  virtual void setCodelCallback(ExpireCallback expireCallback) {
+    for (const auto& m : managers_) {
+      m->setCodelCallback(expireCallback);
+    }
   }
 
   virtual void setThreadInitCallback(InitCallback initCallback) {
     throw IllegalStateException("Not implemented");
+  }
+
+  void enableCodel(bool enabled) {
+    for (const auto& m : managers_) {
+      m->enableCodel(enabled);
+    }
   }
 
 private:

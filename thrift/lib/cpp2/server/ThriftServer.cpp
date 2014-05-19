@@ -1,30 +1,30 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
+
 #include "thrift/lib/cpp2/server/ThriftServer.h"
 
 #include "folly/Conv.h"
 #include "folly/Memory.h"
 #include "folly/Random.h"
 #include "folly/ScopeGuard.h"
+#include "thrift/lib/cpp2/async/GssSaslServer.h"
 #include "thrift/lib/cpp2/server/Cpp2Connection.h"
 #include "thrift/lib/cpp2/server/Cpp2Worker.h"
 #include "thrift/lib/cpp/concurrency/PosixThreadFactory.h"
+#include "thrift/lib/cpp/concurrency/ThreadManager.h"
 
 #include <boost/thread/barrier.hpp>
 
@@ -44,7 +44,7 @@ DEFINE_string(sasl_policy, "permitted",
 
 DEFINE_string(
   kerberos_service_name,
-  "host",
+  "",
   "The service part of the principal name for the service");
 
 namespace apache { namespace thrift {
@@ -58,6 +58,7 @@ using std::shared_ptr;
 using apache::thrift::async::TEventBaseManager;
 using apache::thrift::concurrency::PosixThreadFactory;
 using apache::thrift::concurrency::ThreadFactory;
+using apache::thrift::concurrency::ThreadManager;
 using apache::thrift::concurrency::PriorityThreadManager;
 
 const int ThriftServer::T_ASYNC_DEFAULT_WORKER_THREADS =
@@ -74,6 +75,7 @@ std::atomic<int32_t> ThriftServer::globalActiveRequests_(0);
 ThriftServer::ThriftServer() :
   apache::thrift::server::TServer(
     std::shared_ptr<apache::thrift::server::TProcessor>()),
+  cpp2WorkerThreadName_("Cpp2Worker"),
   port_(-1),
   saslEnabled_(false),
   nonSaslEnabled_(true),
@@ -97,8 +99,10 @@ ThriftServer::ThriftServer() :
   minCompressBytes_(0),
   isOverloaded_([]() { return false; }),
   queueSends_(true),
+  enableCodel_(false),
   stopWorkersOnStopListening_(true) {
 
+  // SASL setup
   if (FLAGS_sasl_policy == "required") {
     setSaslEnabled(true);
     setNonSaslEnabled(false);
@@ -106,19 +110,13 @@ ThriftServer::ThriftServer() :
     setSaslEnabled(true);
     setNonSaslEnabled(true);
   }
-
-  if (FLAGS_sasl_policy == "required" || FLAGS_sasl_policy == "permitted") {
-    // Enable both secure / insecure connections
-    char hostname[256];
-    if (gethostname(hostname, 255)) {
-      LOG(FATAL) << "Failed getting hostname";
-      return;
-    }
-    setServicePrincipal(FLAGS_kerberos_service_name + "/" + hostname);
-  }
 }
 
 ThriftServer::~ThriftServer() {
+  if (saslThreadManager_) {
+    saslThreadManager_->stop();
+  }
+
   if (stopWorkersOnStopListening_) {
     // Everything is already taken care of.
     return;
@@ -227,14 +225,66 @@ void ThriftServer::setup() {
         new PosixThreadFactory));
     }
 
+    if (FLAGS_sasl_policy == "required" || FLAGS_sasl_policy == "permitted") {
+      if (!saslThreadManager_) {
+        saslThreadManager_ = ThreadManager::newSimpleThreadManager(
+          nPoolThreads_ > 0 ? nPoolThreads_ : nWorkers_, /* count */
+          0, /* pendingTaskCountMax -- no limit */
+          false, /* enableTaskStats */
+          0 /* maxQueueLen -- large default */);
+        saslThreadManager_->threadFactory(threadFactory_);
+        saslThreadManager_->start();
+      }
+      auto saslThreadManager = saslThreadManager_;
+
+      if (getSaslServerFactory()) {
+        // If the factory is already set, don't override it with the default
+      } else if (FLAGS_kerberos_service_name.empty()) {
+        // If the service name is not specified, not need to pin the principal.
+        // Allow the server to accept anything in the keytab.
+        setSaslServerFactory([=] (TEventBase* evb) {
+          return std::unique_ptr<SaslServer>(
+            new GssSaslServer(evb, saslThreadManager));
+        });
+      } else {
+        char hostname[256];
+        if (gethostname(hostname, 255)) {
+          LOG(FATAL) << "Failed getting hostname";
+        }
+        setSaslServerFactory([=] (TEventBase* evb) {
+          auto saslServer = std::unique_ptr<SaslServer>(
+            new GssSaslServer(evb, saslThreadManager));
+          saslServer->setServiceIdentity(
+            FLAGS_kerberos_service_name + "/" + hostname);
+          return std::move(saslServer);
+        });
+      }
+    }
+
     if (!threadManager_) {
       std::shared_ptr<apache::thrift::concurrency::ThreadManager>
         threadManager(PriorityThreadManager::newPriorityThreadManager(
                         nPoolThreads_ > 0 ? nPoolThreads_ : nWorkers_,
                         true /*stats*/));
+      threadManager->enableCodel(getEnableCodel());
+      if (!poolThreadName_.empty()) {
+        threadManager->setNamePrefix(poolThreadName_);
+      }
       threadManager->start();
       setThreadManager(threadManager);
     }
+    threadManager_->setExpireCallback([&](std::shared_ptr<Runnable> r) {
+        EventTask* task = dynamic_cast<EventTask*>(r.get());
+        if (task) {
+          task->expired();
+        }
+    });
+    threadManager_->setCodelCallback([&](std::shared_ptr<Runnable> r) {
+        auto observer = getObserver();
+        if (observer) {
+          observer->queueTimeout();
+        }
+    });
 
     auto b = std::make_shared<boost::barrier>(nWorkers_ + 1);
 
@@ -260,7 +310,7 @@ void ThriftServer::setup() {
     for (auto& worker: workers_) {
       worker.thread->start();
       ++threadsStarted;
-      worker.thread->setName(folly::to<std::string>("Cpp2Worker",
+      worker.thread->setName(folly::to<std::string>(cpp2WorkerThreadName_,
                                                     threadsStarted));
     }
 
@@ -418,6 +468,14 @@ ThriftServer::CumulativeFailureInjection::test() const {
   return InjectedFailure::NONE;
 }
 
+int32_t ThriftServer::getPendingCount() const {
+  int pendingCount = 0;
+  for (const auto& worker : workers_) {
+    pendingCount += worker.worker->getPendingCount();
+  }
+  return pendingCount;
+}
+
 bool ThriftServer::isOverloaded(uint32_t workerActiveRequests) {
   if (UNLIKELY(isOverloaded_())) {
     return true;
@@ -425,11 +483,7 @@ bool ThriftServer::isOverloaded(uint32_t workerActiveRequests) {
 
   if (maxRequests_ > 0) {
     if (isUnevenLoad_) {
-      int pendingRequests = 0;
-      for (auto& worker: workers_) {
-        pendingRequests += worker.worker->getPendingCount();
-      }
-      return (globalActiveRequests_ + pendingRequests) >= maxRequests_;
+      return globalActiveRequests_ + getPendingCount() >= maxRequests_;
     } else {
       return workerActiveRequests >= maxRequests_ / nWorkers_;
     }

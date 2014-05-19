@@ -1,20 +1,17 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #ifndef THRIFT_TRANSPORT_THEADER_H_
@@ -26,6 +23,7 @@
 #include "thrift/lib/cpp/protocol/TCompactProtocol.h"
 #include "thrift/lib/cpp/protocol/TProtocolTypes.h"
 #include "thrift/lib/cpp/concurrency/ThreadManager.h"
+#include "thrift/lib/cpp/util/THttpParser.h"
 
 #include "folly/io/IOBuf.h"
 #include "folly/io/IOBufQueue.h"
@@ -37,17 +35,18 @@
 #include <chrono>
 
 // Don't include the unknown client.
-#define CLIENT_TYPES_LEN 6
+#define CLIENT_TYPES_LEN 7
 
 // These are local to this build and never appear on the wire.
 enum CLIENT_TYPE {
   THRIFT_HEADER_CLIENT_TYPE = 0,
   THRIFT_FRAMED_DEPRECATED = 1,
   THRIFT_UNFRAMED_DEPRECATED = 2,
-  THRIFT_HTTP_CLIENT_TYPE = 3,
-  THRIFT_FRAMED_COMPACT = 4,
-  THRIFT_HEADER_SASL_CLIENT_TYPE = 5,
-  THRIFT_UNKNOWN_CLIENT_TYPE = 6,
+  THRIFT_HTTP_SERVER_TYPE = 3,
+  THRIFT_HTTP_CLIENT_TYPE = 4,
+  THRIFT_FRAMED_COMPACT = 5,
+  THRIFT_HEADER_SASL_CLIENT_TYPE = 6,
+  THRIFT_UNKNOWN_CLIENT_TYPE = 7,
 };
 
 // These appear on the wire.
@@ -320,6 +319,11 @@ class THeader {
 
   void setClientTimeout(std::chrono::milliseconds timeout);
 
+  /**
+   * Sets the THeader up in HTTP CLIENT mode. host can be an empty string
+   */
+  void useAsHttpClient(const std::string& host, const std::string& uri);
+
  protected:
 
   void setBestClientType();
@@ -328,12 +332,16 @@ class THeader {
 
   std::unique_ptr<folly::IOBufQueue> queue_;
 
+  // Http client parser
+  std::unique_ptr<apache::thrift::util::THttpClientParser> httpClientParser_;
+
   // 0 and 16th bits must be 0 to differentiate from framed & unframed
   static const uint32_t HEADER_MAGIC = 0x0FFF0000;
   static const uint32_t HEADER_MASK = 0xFFFF0000;
   static const uint32_t FLAGS_MASK = 0x0000FFFF;
   static const uint16_t STREAM_FLAG_MASK = 0x0006;
-  static const uint32_t HTTP_MAGIC = 0x504F5354; // POST
+  static const uint32_t HTTP_SERVER_MAGIC = 0x504F5354; // POST
+  static const uint32_t HTTP_CLIENT_MAGIC = 0x48545450; // HTTP
 
   static const uint32_t MAX_FRAME_SIZE = 0x3FFFFFFF;
 

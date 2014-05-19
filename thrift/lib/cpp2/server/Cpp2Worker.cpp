@@ -1,22 +1,18 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Copyright 2014 Facebook, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
-
 
 #include "thrift/lib/cpp2/server/Cpp2Worker.h"
 
@@ -190,9 +186,6 @@ void Cpp2Worker::serve() {
     // request timeout.
     timer_.reset(new HHWheelTimer(&eventBase_));
 
-    // Start counting pending fd's for overload detection
-    pendingCount();
-
     // No events are registered by default, loopForever.
     eventBase_.loopForever();
 
@@ -223,21 +216,24 @@ Cpp2Worker::~Cpp2Worker() {
   eventBase_.terminateLoopSoon();
 }
 
-void Cpp2Worker::pendingCount() {
-  pendingCount_ = 0;
-  for (auto& connection : activeConnections_) {
-    if (connection->pending()) {
-      pendingCount_++;
+int Cpp2Worker::pendingCount() {
+  auto now = std::chrono::steady_clock::now();
+
+  // Only recalculate once every pending_interval
+  if (pendingTime_ < now) {
+    pendingTime_ = now + std::chrono::milliseconds(FLAGS_pending_interval);
+    pendingCount_ = 0;
+    for (auto& connection : activeConnections_) {
+      if (connection->pending()) {
+        pendingCount_++;
+      }
     }
   }
 
-  // Recalculate once in the next loop
-  eventBase_.runAfterDelay([&](){
-    pendingCount();
-  }, FLAGS_pending_interval);
+  return pendingCount_;
 }
 
-int Cpp2Worker::getPendingCount() {
+int Cpp2Worker::getPendingCount() const {
   return pendingCount_;
 }
 

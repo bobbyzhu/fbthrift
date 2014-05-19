@@ -39,16 +39,17 @@ libthriftcpp2_la_SOURCES = async/HeaderClientChannel.cpp \
 			   async/InputStream.cpp \
 			   async/OutputStream.cpp \
 			   protocol/StreamSerializers.cpp \
+			   protocol/Serializer.cpp \
+			   protocol/DebugProtocol.cpp \
 			   security/KerberosSASLHandshakeClient.cpp \
 			   security/KerberosSASLHandshakeServer.cpp \
 			   security/KerberosSASLHandshakeUtils.cpp \
+			   security/KerberosSASLThreadManager.cpp \
 			   security/SecurityKillSwitch.cpp \
 			   async/HeaderServerChannel.cpp \
 			   server/Cpp2Connection.cpp \
 			   server/Cpp2Worker.cpp \
 			   server/ThriftServer.cpp \
-			   ../cpp/async/TEventBase.cpp \
-			   ../cpp/async/Request.cpp \
 			   ../cpp/async/TAsyncSocket.cpp \
 			   ../cpp/async/TAsyncSSLSocket.cpp \
 			   ../cpp/EventHandlerBase.cpp \
@@ -57,17 +58,17 @@ libthriftcpp2_la_SOURCES = async/HeaderClientChannel.cpp \
 			   ../cpp/transport/TSocketAddress.cpp \
 			   ../cpp/util/ScopedServerThread.cpp \
 			   ../cpp/util/SocketRetriever.cpp \
-			   ../cpp/async/TEventHandler.cpp \
 			   ../cpp/async/TAsyncServerSocket.cpp \
 			   ../cpp/async/HHWheelTimer.cpp \
 			   ../cpp/util/VarintUtils.cpp \
-			   ../cpp/async/TAsyncTimeout.cpp \
 			   ../cpp/async/TAsyncTimeoutSet.cpp \
 			   ../cpp/async/TEventBaseManager.cpp \
-			   ../cpp/util/FdUtils.cpp
+			   ../cpp/util/FdUtils.cpp \
+			   ../cpp/util/kerberos/Krb5Util.cpp \
+			   ../cpp/util/kerberos/Krb5CredentialsCacheManager.cpp
 
 
-libthriftcpp2_la_LIBADD = ../cpp/libthrift.la
+libthriftcpp2_la_LIBADD = ../cpp/libthrift.la -lkrb5 -lgssapi_krb5
 libthriftcpp2_la_CPPFLAGS = $(AM_CPPFLAGS) $(LIBEVENT_CPPFLAGS) -I../cpp -I$(top_builddir)/../../gperftools-2.0.99/src
 
 THRIFT = $(top_builddir)/compiler/thrift1
@@ -79,7 +80,8 @@ gen-cpp2/Sasl_types.h: Sasl.thrift
 	PYTHONPATH=$(PYPATH) python $(top_builddir)/compiler/main.py --gen cpp2 $<
 
 libsaslstubs_a_SOURCES = gen-cpp2/Sasl_constants.cpp \
-			 gen-cpp2/Sasl_types.cpp
+			 gen-cpp2/Sasl_types.cpp \
+			 gen-cpp2/SaslAuthService.cpp
 
 libsaslstubs_a_CPPFLAGS = $(AM_CPPFLAGS) $(LIBEVENT_CPPFLAGS) -I../cpp -I$(top_builddir)/../../gperftools-2.0.99/src
 
@@ -87,4 +89,3 @@ PYPATH = $(top_builddir)/compiler/py/build/lib.linux-x86_64-2.7
 
 clean:
 	rm -rf gen-cpp2 gen-cpp
-
